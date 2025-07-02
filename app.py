@@ -27,20 +27,11 @@ sheet = client.open("escape_rooms_full_data").sheet1
 
 openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
-def get_answer_from_sheet(user_question: str) -> str:
-    records = sheet.get_all_records()
-    for row in records:
-        question = row.get("שאלה", "").strip()
-        answer = row.get("תשובה", "").strip()
-        if question and question in user_question:
-            return answer
-    return None
-
 def ask_gpt_with_context(user_question: str, sheet_data: str) -> str:
     prompt = f"""
     אתה נציג שירות לקוחות בעסק חדרי בריחה. ענה ללקוח בהתאם למידע הבא:
 
-    מידע מתוך הקובץ:
+    מידע מתוך השיטס:
     {sheet_data}
 
     שאלה של הלקוח:
@@ -59,15 +50,19 @@ def ask_gpt_with_context(user_question: str, sheet_data: str) -> str:
     return response.choices[0].message.content.strip()
 
 def handle_user_message(user_question: str) -> str:
-    direct_answer = get_answer_from_sheet(user_question)
-    if direct_answer:
-        return direct_answer
+    rows = sheet.get_all_values()
+    if not rows or len(rows) < 2:
+        return "שגיאה: הטבלה ריקה רקה."
 
-    records = sheet.get_all_records()
+    header = rows[0]
+    data_rows = rows[1:]
+
     sheet_data = "\n".join([
-        f"שאלה: {row.get('שאלה', '').strip()} תשובה: {row.get('תשובה', '').strip()}"
-        for row in records
+        " | ".join(row) for row in data_rows
     ])
+
+    print("📄 Sheet data preview:", sheet_data[:500])
+
     return ask_gpt_with_context(user_question, sheet_data)
 
 @app.route("/webhook", methods=["POST"])
