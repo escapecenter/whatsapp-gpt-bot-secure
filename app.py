@@ -64,9 +64,10 @@ def handle_user_message(user_question: str) -> str:
     if direct_answer:
         return direct_answer
 
+    records = sheet.get_all_records()
     sheet_data = "\n".join([
-        f"שאלה: {row['שאלה']} תשובה: {row['תשובה']}"
-        for row in sheet.get_all_records()
+        f"שאלה: {row.get('שאלה', '').strip()} תשובה: {row.get('תשובה', '').strip()}"
+        for row in records
     ])
     return ask_gpt_with_context(user_question, sheet_data)
 
