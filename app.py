@@ -1,5 +1,4 @@
 from flask import Flask, request, jsonify
-from openai import OpenAI
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import os
@@ -12,7 +11,6 @@ scope = [
     "https://www.googleapis.com/auth/drive"
 ]
 
-# קריאת JSON מה-ENV
 creds_json = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
 if not creds_json:
     raise EnvironmentError("❌ חסר GOOGLE_APPLICATION_CREDENTIALS_JSON")
@@ -26,9 +24,6 @@ creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
 sheet = client.open("escape_rooms_full_data").sheet1
 
-# יצירת לקוח OpenAI
-openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-
 def get_answer_from_sheet(user_question: str) -> str:
     records = sheet.get_all_records()
     for row in records:
@@ -39,26 +34,7 @@ def get_answer_from_sheet(user_question: str) -> str:
     return None
 
 def ask_gpt_with_context(user_question: str, sheet_data: str) -> str:
-    prompt = f"""
-    אתה נציג שירות לקוחות בעסק חדרי בריחה. ענה ללקוח בהתאם למידע הבא:
-
-    מידע מתוך הקובץ:
-    {sheet_data}
-
-    שאלה של הלקוח:
-    {user_question}
-    """
-
-    response = openai_client.chat.completions.create(
-        model="gpt-3.5-turbo",
-        messages=[
-            {"role": "system", "content": "אתה נציג שירות לקוחות מקצועי."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.6,
-        max_tokens=300
-    )
-    return response.choices[0].message.content.strip()
+    return f"🔧 זו תשובת דמה לצורך בדיקה בלבד עבור השאלה: {user_question}"
 
 def handle_user_message(user_question: str) -> str:
     direct_answer = get_answer_from_sheet(user_question)
@@ -96,3 +72,4 @@ def index():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
