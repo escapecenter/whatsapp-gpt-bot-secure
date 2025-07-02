@@ -7,26 +7,25 @@ import json
 
 app = Flask(__name__)
 
-# התחברות לגוגל שיטס (באמצעות Environment Variable)
 scope = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive"
 ]
 
+# קריאת JSON מה-ENV
 creds_json = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
 if not creds_json:
-    raise EnvironmentError("Missing GOOGLE_APPLICATION_CREDENTIALS_JSON environment variable")
+    raise EnvironmentError("❌ חסר GOOGLE_APPLICATION_CREDENTIALS_JSON")
 
 try:
     creds_dict = json.loads(creds_json)
 except json.JSONDecodeError as e:
-    raise ValueError(f"Invalid JSON in GOOGLE_APPLICATION_CREDENTIALS_JSON: {e}")
+    raise ValueError(f"❌ JSON שגוי: {e}")
 
 creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
 sheet = client.open("escape_rooms_full_data").sheet1
 
-# קבלת מפתח מ-ENV
 openai.api_key = os.environ.get("OPENAI_API_KEY")
 
 def get_answer_from_sheet(user_question: str) -> str:
@@ -71,20 +70,27 @@ def handle_user_message(user_question: str) -> str:
     ])
     return ask_gpt_with_context(user_question, sheet_data)
 
-@app.route("/", methods=["GET"])
-def index():
-    return "✅ WhatsApp GPT bot is alive", 200
-
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.get_json()
-    message = data.get("message")
-    if not message:
-        return jsonify({"error": "Missing message"}), 400
+    try:
+        data = request.get_json(force=True)
+        print("📥 Received data:", data)
 
-    reply = handle_user_message(message)
-    return jsonify({"reply": reply})
+        if not data or "message" not in data:
+            return jsonify({"error": "Missing 'message' key"}), 400
+
+        user_question = data["message"]
+        reply = handle_user_message(user_question)
+        print("✅ Reply:", reply)
+        return jsonify({"reply": reply})
+
+    except Exception as e:
+        print("❌ Error in /webhook:", e)
+        return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
+
+@app.route("/", methods=["GET"])
+def index():
+    return "✅ WhatsApp GPT bot is alive"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-
