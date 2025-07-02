@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-import openai
+from openai import OpenAI
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import os
@@ -26,7 +26,8 @@ creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
 sheet = client.open("escape_rooms_full_data").sheet1
 
-openai.api_key = os.environ.get("OPENAI_API_KEY")
+# יצירת לקוח OpenAI
+openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 def get_answer_from_sheet(user_question: str) -> str:
     records = sheet.get_all_records()
@@ -48,7 +49,7 @@ def ask_gpt_with_context(user_question: str, sheet_data: str) -> str:
     {user_question}
     """
 
-    response = openai.ChatCompletion.create(
+    response = openai_client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[
             {"role": "system", "content": "אתה נציג שירות לקוחות מקצועי."},
