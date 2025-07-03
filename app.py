@@ -1,3 +1,4 @@
+You said:
 from flask import Flask, request, jsonify
 from openai import OpenAI
 import gspread
@@ -28,8 +29,7 @@ sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/17e13cqXTMQ0a
 openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 def ask_gpt_with_context(user_question: str, sheet_data: str) -> str:
-    prompt = f"""
- אתה נציג שירות בצ'אט של Escape Center.
+    prompt = f"""אתה נציג שירות בצ'אט של Escape Center.
 התפקיד שלך הוא לענות ללקוח בצורה נעימה, חכמה, אנושית ושירותית – כאילו אתה נציג בוואטסאפ ולא בוט.
 ענֵה בצורה ברורה, עניינית ומדויקת, בלי לחזור על טקסט מיותר או להעתיק מידע מהטבלה – רק לפי מה שבאמת שואלים.
 אם שואלים על מחירים, הגבלות גיל, נגישות, זמינות או פרטים אחרים – השתמש במידע מהטבלה כדי לתת תשובה ברורה שמתאימה בדיוק לשאלה.
@@ -45,11 +45,7 @@ def ask_gpt_with_context(user_question: str, sheet_data: str) -> str:
     response = openai_client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[
-            {"role": "system", "content": "אתה נציג שירות בצ'אט של Escape Center.
-התפקיד שלך הוא לענות ללקוח בצורה נעימה, חכמה, אנושית ושירותית – כאילו אתה נציג בוואטסאפ ולא בוט.
-ענֵה בצורה ברורה, עניינית ומדויקת, בלי לחזור על טקסט מיותר או להעתיק מידע מהטבלה – רק לפי מה שבאמת שואלים.
-אם שואלים על מחירים, הגבלות גיל, נגישות, זמינות או פרטים אחרים – השתמש במידע מהטבלה כדי לתת תשובה ברורה שמתאימה בדיוק לשאלה.
-אם חסר מידע, הסבר ללקוח שנשמח לעזור לו בטלפון או בהודעה."},
+            {"role": "system", "content": "אתה נציג שירות לקוחות מקצועי של חברת ESCAPE CENTER."},
             {"role": "user", "content": prompt}
         ],
         temperature=0.6,
@@ -91,4 +87,3 @@ def index():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-
