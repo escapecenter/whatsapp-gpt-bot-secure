@@ -23,15 +23,15 @@ except json.JSONDecodeError as e:
 
 creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
-sheet = client.open("escape_rooms_full_data").sheet1
+sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/17e13cqXTMQ0aq6-EUpZmgvOKs0sM6OblxM3Wi1V3-FE/edit").sheet1
 
 openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 def ask_gpt_with_context(user_question: str, sheet_data: str) -> str:
     prompt = f"""
-    אתה נציג שירות לקוחות בעסק חדרי בריחה. ענה ללקוח בהתאם למידע הבא:
+    אתה נציג שירות לקוחות של חברת ESCAPE CENTER, המתמחה בחדרי בריחה. 
+    ענה ללקוח באופן מקצועי, ברור, ושירותי, תוך שימוש במידע הבא מהטבלה:
 
-    מידע מתוך השיטס:
     {sheet_data}
 
     שאלה של הלקוח:
@@ -41,26 +41,20 @@ def ask_gpt_with_context(user_question: str, sheet_data: str) -> str:
     response = openai_client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[
-            {"role": "system", "content": "אתה נציג שירות לקוחות מקצועי."},
+            {"role": "system", "content": "אתה נציג שירות לקוחות מקצועי של חברת ESCAPE CENTER."},
             {"role": "user", "content": prompt}
         ],
         temperature=0.6,
-        max_tokens=300
+        max_tokens=500
     )
     return response.choices[0].message.content.strip()
 
 def handle_user_message(user_question: str) -> str:
     rows = sheet.get_all_values()
     if not rows or len(rows) < 2:
-        return "שגיאה: הטבלה ריקה רקה."
+        return "שגיאה: אין מידע בטבלה."
 
-    header = rows[0]
-    data_rows = rows[1:]
-
-    sheet_data = "\n".join([
-        " | ".join(row) for row in data_rows
-    ])
-
+    sheet_data = "\n".join([" | ".join(row) for row in rows])
     print("📄 Sheet data preview:", sheet_data[:500])
 
     return ask_gpt_with_context(user_question, sheet_data)
