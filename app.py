@@ -28,24 +28,22 @@ sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/17e13cqXTMQ0a
 openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 def ask_gpt_with_context(user_question: str, sheet_data: str) -> str:
-    prompt = f"""אתה נציג שירות בצ'אט של Escape Center.
-התפקיד שלך הוא לענות ללקוח בצורה נעימה, חכמה, אנושית ושירותית – כאילו אתה נציג בוואטסאפ ולא בוט.
-ענֵה בצורה ברורה, עניינית ומדויקת, בלי לחזור על טקסט מיותר או להעתיק מידע מהטבלה – רק לפי מה שבאמת שואלים.
-אם שואלים על מחירים, הגבלות גיל, נגישות, זמינות או פרטים אחרים – השתמש במידע מהטבלה כדי לתת תשובה ברורה שמתאימה בדיוק לשאלה.
-אם חסר מידע, הסבר ללקוח שנשמח לעזור לו בטלפון או בהודעה.
+    system_prompt = f"""
+    אתה נציג שירות בוואטסאפ של Escape Center.
+    תענה ללקוחות בצורה קלילה, חכמה, שירותית ונעימה – כאילו אתה באמת נציג אנושי ולא רובוט.
+    אל תתחיל כל תשובה עם "שלום" או פנייה פורמלית – פשוט תענה ישר לעניין.
+    תשתמש רק במידע שרלוונטי לשאלה מתוך הטבלה – לא להעתיק הכל, לא להיות רשמי מדי, ולא לחזור על טקסטים.
+    אם חסר מידע – תגיד ללקוח שאשמח לעזור לו בטלפון או להמשיך איתו בהודעה.
 
-הנה כל המידע שאתה יכול להשתמש בו:
+    הנה כל המידע שיש לך:
     {sheet_data}
-
-    שאלה של הלקוח:
-    {user_question}
     """
 
     response = openai_client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[
-            {"role": "system", "content": "אתה נציג שירות לקוחות מקצועי של חברת ESCAPE CENTER."},
-            {"role": "user", "content": prompt}
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_question}
         ],
         temperature=0.6,
         max_tokens=500
