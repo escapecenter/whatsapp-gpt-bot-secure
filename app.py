@@ -5,24 +5,17 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import os
 import json
+import re
 
 app = Flask(__name__)
 
 # === Google Sheets Setup ===
-scope = [
-    "https://spreadsheets.google.com/feeds",
-    "https://www.googleapis.com/auth/drive"
-]
-
+scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 creds_json = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
 if not creds_json:
     raise EnvironmentError("❌ חסר GOOGLE_APPLICATION_CREDENTIALS_JSON")
 
-try:
-    creds_dict = json.loads(creds_json)
-except json.JSONDecodeError as e:
-    raise ValueError(f"❌ JSON שגוי: {e}")
-
+creds_dict = json.loads(creds_json)
 creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
 sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/17e13cqXTMQ0aq6-EUpZmgvOKs0sM6OblxM3Wi1V3-FE/edit").sheet1
@@ -30,27 +23,37 @@ sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/17e13cqXTMQ0a
 # === OpenAI Setup ===
 openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
-# === In-memory chat history ===
+# === In-memory chat history and deduplication ===
 chat_history = {}
+last_message = {}
 
 # === Prompt Template ===
 def build_system_prompt(sheet_data: str) -> str:
     return f"""
-    אתה אחד מנציגי השירות של Escape Center בוואטסאפ, קוראים לך שובל
-    תענה בצורה מכובדת אך לא רשמית כמו נציג שירות אמיתי בגיל 27, אנושית, שירותית.
-    תשתמש רק במידע מתוך הטבלה. אל תמציא מידע. אל תכתוב מידע כללי.
-    אם אין תשובה ברורה מתוך הנתונים – תציע שנחזור בהודעה או טלפון.
+אתה נציג שירות בשם שובל – עובד אמיתי במתחם חדרי בריחה.
+ענה תמיד בצורה אנושית, שירותית, קלילה, בגובה העיניים – לא רשמית ולא רובוטית.
+אל תפתח את השיחה ב"היי" ואל תציין את שם המקום – זה כבר נאמר ללקוח קודם.
 
-    הנה המידע שיש לך:
-    {sheet_data}
-    """
+אם מבקשים המלצה על חדר, אל תענה לפני ששאלת (אם לא נאמר כבר):
+1. כמה שחקנים תהיו?
+2. מה גילאי המשתתפים?
+3. שיחקתם כבר אצלנו? אם כן – באיזה חדר?
+4. איזה סגנון חדר אתם הכי אוהבים? (אימה, אקשן, מצחיק, דרמטי וכו')
+
+ענה רק לפי המידע שניתן. אל תמציא.
+אם אין לך תשובה – כתוב בנימוס:
+"אני לא בטוח בזה – הכי טוב לפנות אלינו ישירות 📞 050-5255144"
+תמיד תהיה חייכן, מקצועי וסבלני – כאילו אתה באמת נמצא במתחם ומדבר עם הלקוח.
+
+הנה המידע שיש לך:
+{sheet_data}
+"""
 
 # === GPT Call with Context ===
 def ask_gpt(user_id: str, user_question: str, sheet_data: str) -> str:
     system_prompt = build_system_prompt(sheet_data)
     history = chat_history.get(user_id, [])
     history.append({"role": "user", "content": user_question})
-
     messages = [{"role": "system", "content": system_prompt}] + history
 
     response = openai_client.chat.completions.create(
@@ -61,18 +64,26 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str) -> str:
     )
 
     answer = response.choices[0].message.content.strip()
+    # ניקוי סלאשים מסביב לשמות חדרים
+    answer = re.sub(r"/([^/]{2,30})/", r"\1", answer)
+
     history.append({"role": "assistant", "content": answer})
     chat_history[user_id] = history
     return answer
 
 # === Handle User Input ===
 def handle_user_message(user_id: str, user_question: str) -> str:
+    # מניעת כפילות
+    if last_message.get(user_id) == user_question:
+        return "רגע אחד... נראה שכבר עניתי על זה 😊"
+    last_message[user_id] = user_question
+
     rows = sheet.get_all_values()
     if not rows or len(rows) < 2:
         return "שגיאה: אין מידע בטבלה."
 
     sheet_data = "\n".join([" | ".join(row) for row in rows])
-    print(f"📄 Sheet Preview (first 300 chars): {sheet_data[:300]}")
+    print(f"📄 Sheet Preview: {sheet_data[:300]}")
     return ask_gpt(user_id, user_question, sheet_data)
 
 # === Routes ===
