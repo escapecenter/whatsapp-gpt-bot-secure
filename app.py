@@ -12,8 +12,11 @@ import tiktoken
 app = Flask(__name__)
 
 # === Redis Setup ===
-redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
-redis_client = redis.from_url(redis_url, decode_responses=True)
+redis_client = redis.Redis(
+    host=os.getenv("REDIS_HOST", "localhost"),
+    port=int(os.getenv("REDIS_PORT", 6379)),
+    decode_responses=True
+)
 
 # === Google Sheets Setup ===
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -46,16 +49,6 @@ def get_last_message(user_id: str) -> str:
 def set_last_message(user_id: str, message: str):
     redis_client.setex(f"last_msg:{user_id}", 600, message)
 
-# === Token Counting ===
-def count_tokens(messages: list, model: str = "gpt-3.5-turbo") -> int:
-    enc = tiktoken.encoding_for_model(model)
-    tokens = 0
-    for msg in messages:
-        tokens += 4
-        tokens += len(enc.encode(msg["content"]))
-    tokens += 2
-    return tokens
-
 # === Prompt Template ===
 def build_system_prompt(sheet_data: str) -> str:
     return f"""
@@ -81,6 +74,15 @@ def build_system_prompt(sheet_data: str) -> str:
 {sheet_data}
 """
 
+# === Count Tokens ===
+def count_tokens(messages: list) -> int:
+    enc = tiktoken.encoding_for_model("gpt-3.5-turbo")
+    total = 0
+    for msg in messages:
+        total += 4  # tokens per message overhead
+        total += len(enc.encode(msg.get("content", "")))
+    return total
+
 # === GPT Call with Context ===
 def ask_gpt(user_id: str, user_question: str, sheet_data: str) -> str:
     system_prompt = build_system_prompt(sheet_data)
@@ -90,11 +92,18 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str) -> str:
 
     token_count = count_tokens(messages)
     print(f"🔢 Token count: {token_count}")
-    if token_count > 4000:
+
+    if token_count <= 4096:
+        model_name = "gpt-3.5-turbo"
+    elif token_count <= 16384:
+        model_name = "gpt-3.5-turbo-16k"
+    else:
         return "שגיאה: הבקשה חורגת ממגבלת טוקנים."
 
+    print(f"🤖 Using model: {model_name}")
+
     response = openai_client.chat.completions.create(
-        model="gpt-3.5-turbo",
+        model=model_name,
         messages=messages,
         temperature=0.6,
         max_tokens=500
@@ -169,3 +178,4 @@ def index():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
