@@ -18,7 +18,11 @@ if not creds_json:
 creds_dict = json.loads(creds_json)
 creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
-sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/17e13cqXTMQ0aq6-EUpZmgvOKs0sM6OblxM3Wi1V3-FE/edit").sheet1
+sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/17e13cqXTMQ0aq6-EUpZmgvOKs0sM6OblxM3Wi1V3-FE/edit")
+
+# רשימת שמות החדרים תואמת לשמות הגיליונות
+ROOMS = ["אחוזת השכן", "ההתערבות", "מקדש הקאמי", "אינפיניטי", "נרקוס"]
+DEFAULT_SHEET = "מידע כללי"
 
 # === OpenAI Setup ===
 openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
@@ -32,7 +36,7 @@ def build_system_prompt(sheet_data: str) -> str:
     return f"""
 אתה נציג שירות בשם שובל – עובד אמיתי במתחם חדרי בריחה.
 ענה תמיד בצורה אנושית, שירותית, קלילה, בגובה העיניים – לא רשמית ולא רובוטית.
-אל תפתח את השיחה בהיי" ואל תציין את שם המקום – זה כבר נאמר ללקוח.
+אל תפתח את השיחה ב"היי" ואל תציין את שם המקום – זה כבר נאמר ללקוח.
 
 אם מבקשים המלצה על חדר, אל תענה לפני ששאלת (אם לא נאמר כבר):
 תגיד קודם משפט מנומס כמו:
@@ -67,14 +71,17 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str) -> str:
     )
 
     answer = response.choices[0].message.content.strip()
-    # ניקוי סלאשים מסביב לשמות חדרים (בתחילת או סוף מילה בלבד)
     answer = re.sub(r"(?<!\\S)/(.*?)(?<!\\s)/", r"\1", answer)
-    # הסרה של משפט סיום קבוע לא רצוי
     answer = re.sub(r"איך אני יכול לעזור.*?$", "", answer).strip()
 
     history.append({"role": "assistant", "content": answer})
     chat_history[user_id] = history
     return answer
+
+# === Detect relevant sheets ===
+def detect_relevant_sheets(question: str) -> list:
+    sheets = [room for room in ROOMS if room in question]
+    return sheets or [DEFAULT_SHEET]
 
 # === Handle User Input ===
 def handle_user_message(user_id: str, user_question: str) -> str:
@@ -82,13 +89,25 @@ def handle_user_message(user_id: str, user_question: str) -> str:
         return "רגע אחד... נראה שכבר עניתי על זה 😊"
     last_message[user_id] = user_question
 
-    rows = sheet.get_all_values()
-    if not rows or len(rows) < 2:
-        return "שגיאה: אין מידע בטבלה."
+    relevant_sheets = detect_relevant_sheets(user_question)
+    print(f"📌 Relevant sheets: {relevant_sheets}")
 
-    sheet_data = "\n".join([" | ".join(row) for row in rows])
-    print(f"📄 Sheet Preview: {sheet_data[:300]}")
-    return ask_gpt(user_id, user_question, sheet_data)
+    combined_data = []
+    for name in relevant_sheets:
+        try:
+            ws = sheet.worksheet(name)
+            rows = ws.get_all_values()
+            if rows:
+                combined_data.append(f"-- {name} --\n" + "\n".join([" | ".join(r) for r in rows]))
+        except Exception as e:
+            print(f"⚠️ שגיאה בגליון {name}: {e}")
+
+    if not combined_data:
+        return "שגיאה: לא הצלחנו לקרוא מידע רלוונטי."
+
+    full_context = "\n\n".join(combined_data)
+    print(f"📄 Sheet Preview: {full_context[:300]}")
+    return ask_gpt(user_id, user_question, full_context)
 
 # === Routes ===
 @app.route("/webhook", methods=["POST"])
