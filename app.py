@@ -7,6 +7,7 @@ import os
 import json
 import re
 import redis
+import tiktoken
 
 app = Flask(__name__)
 
@@ -45,6 +46,16 @@ def get_last_message(user_id: str) -> str:
 def set_last_message(user_id: str, message: str):
     redis_client.setex(f"last_msg:{user_id}", 600, message)
 
+# === Token Counting ===
+def count_tokens(messages: list, model: str = "gpt-3.5-turbo") -> int:
+    enc = tiktoken.encoding_for_model(model)
+    tokens = 0
+    for msg in messages:
+        tokens += 4
+        tokens += len(enc.encode(msg["content"]))
+    tokens += 2
+    return tokens
+
 # === Prompt Template ===
 def build_system_prompt(sheet_data: str) -> str:
     return f"""
@@ -76,6 +87,11 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str) -> str:
     history = get_chat_history(user_id)
     history.append({"role": "user", "content": user_question})
     messages = [{"role": "system", "content": system_prompt}] + history
+
+    token_count = count_tokens(messages)
+    print(f"🔢 Token count: {token_count}")
+    if token_count > 4000:
+        return "שגיאה: הבקשה חורגת ממגבלת טוקנים."
 
     response = openai_client.chat.completions.create(
         model="gpt-3.5-turbo",
