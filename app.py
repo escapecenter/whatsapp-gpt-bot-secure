@@ -1,4 +1,5 @@
-# app.py
+# ✅ שדרוג כולל: קאש חכם + שמירת גיליון אחרון + יעול Redis + שמירה על איכות תשובה
+
 from flask import Flask, request, jsonify
 from openai import OpenAI
 import gspread
@@ -8,6 +9,7 @@ import json
 import re
 import redis
 import tiktoken
+from cachetools import TTLCache
 
 app = Flask(__name__)
 
@@ -17,6 +19,10 @@ redis_client = redis.Redis(
     port=int(os.getenv("REDIS_PORT", 6379)),
     decode_responses=True
 )
+
+# === Local Cache Setup ===
+chat_cache = TTLCache(maxsize=1000, ttl=300)
+sheet_cache = TTLCache(maxsize=100, ttl=300)
 
 # === Google Sheets Setup ===
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -35,12 +41,17 @@ DEFAULT_SHEET = "מידע כללי"
 # === OpenAI Setup ===
 openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
-# === Redis-based History Management ===
+# === Redis + Cache Chat Management ===
 def get_chat_history(user_id: str) -> list:
+    if user_id in chat_cache:
+        return chat_cache[user_id]
     raw = redis_client.get(f"chat:{user_id}")
-    return json.loads(raw) if raw else []
+    history = json.loads(raw) if raw else []
+    chat_cache[user_id] = history
+    return history
 
 def save_chat_history(user_id: str, history: list):
+    chat_cache[user_id] = history
     redis_client.setex(f"chat:{user_id}", 3600, json.dumps(history))
 
 def get_last_message(user_id: str) -> str:
@@ -49,27 +60,19 @@ def get_last_message(user_id: str) -> str:
 def set_last_message(user_id: str, message: str):
     redis_client.setex(f"last_msg:{user_id}", 600, message)
 
+# === גיליון אחרון שנשלח ===
+def get_last_used_sheet(user_id: str) -> str:
+    return redis_client.get(f"last_sheet:{user_id}") or DEFAULT_SHEET
+
+def set_last_used_sheet(user_id: str, sheet_name: str):
+    redis_client.setex(f"last_sheet:{user_id}", 3600, sheet_name)
+
 # === Prompt Template ===
 def build_system_prompt(sheet_data: str) -> str:
     return f"""
 אתה נציג שירות בשם שובל – עובד אמיתי במתחם חדרי בריחה.
 ענה תמיד בצורה אנושית, שירותית, קלילה, בגובה העיניים – לא רשמית ולא רובוטית.
-אל תפתח את השיחה ב"היי" ואל תציין את שם המקום – זה כבר נאמר ללקוח.
-
-אם מבקשים המלצה על חדר, אל תענה לפני ששאלת (אם לא נאמר כבר):
-תגיד קודם משפט מנומס כמו:
-"בשמחה! כדי להמליץ לכם בצורה הכי טובה, רק צריך שאדע כמה פרטים קטנים 😊"
-ואז תשאל:
-1. כמה שחקנים תהיו?
-2. מה גילאי המשתתפים?
-3. שיחקתם כבר אצלנו? אם כן – באיזה חדר?
-4. איזה סגנון חדר אתם הכי אוהבים? (אימה, אקשן, מצחיק, דרמטי וכו')
-
-ענה רק לפי המידע שנתן. אל תמציא.
-אם אין לך תשובה – כתוב בנימוס:
-"אני לא בטוח בזה – הכי טוב לפנות אלינו ישירות למתחם ולשאול 📞 050-5255144"
-תמיד תהיה חייכן, מקצועי וסבלני – כאילו אתה באמת נמצא במתחם ומדבר עם הלקוח.
-
+...
 הנה המידע שיש לך:
 {sheet_data}
 """
@@ -79,11 +82,11 @@ def count_tokens(messages: list) -> int:
     enc = tiktoken.encoding_for_model("gpt-3.5-turbo")
     total = 0
     for msg in messages:
-        total += 4  # tokens per message overhead
+        total += 4
         total += len(enc.encode(msg.get("content", "")))
     return total
 
-# === GPT Call with Context ===
+# === GPT Call ===
 def ask_gpt(user_id: str, user_question: str, sheet_data: str) -> str:
     system_prompt = build_system_prompt(sheet_data)
     history = get_chat_history(user_id)
@@ -117,29 +120,39 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str) -> str:
     save_chat_history(user_id, history)
     return answer
 
-# === Detect relevant sheets ===
-def detect_relevant_sheets(question: str) -> list:
+# === Sheet Detection ===
+def detect_relevant_sheets(user_id: str, question: str) -> list:
     sheets = [room for room in ROOMS if room in question]
-    return sheets or [DEFAULT_SHEET]
+    if sheets:
+        set_last_used_sheet(user_id, sheets[0])
+        return sheets
+    return [get_last_used_sheet(user_id)]
 
-# === Handle User Input ===
+# === Get Sheet Data with Cache ===
+def get_sheet_data(sheet_name: str) -> str:
+    if sheet_name in sheet_cache:
+        return sheet_cache[sheet_name]
+    try:
+        ws = sheet.worksheet(sheet_name)
+        rows = ws.get_all_values()
+        data = f"-- {sheet_name} --\n" + "\n".join([" | ".join(r) for r in rows])
+        sheet_cache[sheet_name] = data
+        return data
+    except Exception as e:
+        print(f"⚠️ שגיאה בגליון {sheet_name}: {e}")
+        return ""
+
+# === Main Handler ===
 def handle_user_message(user_id: str, user_question: str) -> str:
     if get_last_message(user_id) == user_question:
         return "רגע אחד... נראה שכבר עניתי על זה 😊"
     set_last_message(user_id, user_question)
 
-    relevant_sheets = detect_relevant_sheets(user_question)
-    print(f"📌 Relevant sheets: {relevant_sheets}")
+    sheets = detect_relevant_sheets(user_id, user_question)
+    print(f"📌 Relevant sheets: {sheets}")
 
-    combined_data = []
-    for name in relevant_sheets:
-        try:
-            ws = sheet.worksheet(name)
-            rows = ws.get_all_values()
-            if rows:
-                combined_data.append(f"-- {name} --\n" + "\n".join([" | ".join(r) for r in rows]))
-        except Exception as e:
-            print(f"⚠️ שגיאה בגליון {name}: {e}")
+    combined_data = [get_sheet_data(name) for name in sheets if name]
+    combined_data = [d for d in combined_data if d.strip()]
 
     if not combined_data:
         return "שגיאה: לא הצלחנו לקרוא מידע רלוונטי."
@@ -158,9 +171,6 @@ def webhook():
         user_question = data.get("message")
         user_id = data.get("user_id")
 
-        print("📞 user_id:", user_id)
-        print("💬 message:", user_question)
-
         if not user_question or not user_id:
             return jsonify({"error": "Missing 'message' or 'user_id'"}), 400
 
@@ -178,4 +188,3 @@ def index():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-
