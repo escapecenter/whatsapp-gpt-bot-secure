@@ -6,8 +6,16 @@ from oauth2client.service_account import ServiceAccountCredentials
 import os
 import json
 import re
+import redis
 
 app = Flask(__name__)
+
+# === Redis Setup ===
+redis_client = redis.Redis(
+    host=os.getenv("REDIS_HOST", "localhost"),
+    port=int(os.getenv("REDIS_PORT", 6379)),
+    decode_responses=True
+)
 
 # === Google Sheets Setup ===
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -20,16 +28,25 @@ creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
 sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/17e13cqXTMQ0aq6-EUpZmgvOKs0sM6OblxM3Wi1V3-FE/edit")
 
-# רשימת שמות החדרים תואמת לשמות הגיליונות
 ROOMS = ["אחוזת השכן", "ההתערבות", "מקדש הקאמי", "אינפיניטי", "נרקוס"]
 DEFAULT_SHEET = "מידע כללי"
 
 # === OpenAI Setup ===
 openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
-# === In-memory chat history and deduplication ===
-chat_history = {}
-last_message = {}
+# === Redis-based History Management ===
+def get_chat_history(user_id: str) -> list:
+    raw = redis_client.get(f"chat:{user_id}")
+    return json.loads(raw) if raw else []
+
+def save_chat_history(user_id: str, history: list):
+    redis_client.setex(f"chat:{user_id}", 3600, json.dumps(history))
+
+def get_last_message(user_id: str) -> str:
+    return redis_client.get(f"last_msg:{user_id}")
+
+def set_last_message(user_id: str, message: str):
+    redis_client.setex(f"last_msg:{user_id}", 600, message)
 
 # === Prompt Template ===
 def build_system_prompt(sheet_data: str) -> str:
@@ -59,7 +76,7 @@ def build_system_prompt(sheet_data: str) -> str:
 # === GPT Call with Context ===
 def ask_gpt(user_id: str, user_question: str, sheet_data: str) -> str:
     system_prompt = build_system_prompt(sheet_data)
-    history = chat_history.get(user_id, [])
+    history = get_chat_history(user_id)
     history.append({"role": "user", "content": user_question})
     messages = [{"role": "system", "content": system_prompt}] + history
 
@@ -75,7 +92,7 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str) -> str:
     answer = re.sub(r"איך אני יכול לעזור.*?$", "", answer).strip()
 
     history.append({"role": "assistant", "content": answer})
-    chat_history[user_id] = history
+    save_chat_history(user_id, history)
     return answer
 
 # === Detect relevant sheets ===
@@ -85,9 +102,9 @@ def detect_relevant_sheets(question: str) -> list:
 
 # === Handle User Input ===
 def handle_user_message(user_id: str, user_question: str) -> str:
-    if last_message.get(user_id) == user_question:
+    if get_last_message(user_id) == user_question:
         return "רגע אחד... נראה שכבר עניתי על זה 😊"
-    last_message[user_id] = user_question
+    set_last_message(user_id, user_question)
 
     relevant_sheets = detect_relevant_sheets(user_question)
     print(f"📌 Relevant sheets: {relevant_sheets}")
