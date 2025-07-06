@@ -1,4 +1,4 @@
-# ✅ הוספת צבירה מצטברת של token_sum + חישוב עלות שיחה בש"
+# ✅ WhatsApp GPT bot webhook + צבירה מצטברת + עלות שיחה בש"ח
 
 from flask import Flask, request, jsonify
 from openai import OpenAI
@@ -40,10 +40,13 @@ sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/17e13cqXTMQ0a
 
 ROOMS = ["אחוזת השכן", "ההתערבות", "מקדש הקאמי", "אינפיניטי", "נרקוס"]
 DEFAULT_SHEET = "מידע כללי"
-
 GENERAL_KEYWORDS = ["טלפון", "הנחה", "פתוח", "איך מגיעים", "איך מזמינים", "שעות", "נכים", "חניה"]
 
 openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
+PRICE_PER_1K_INPUT = 0.001  # $0.001
+PRICE_PER_1K_OUTPUT = 0.002 # $0.002
+ILS_CONVERSION = 3.7
 
 def count_tokens(messages: list) -> int:
     enc = tiktoken.encoding_for_model("gpt-3.5-turbo")
@@ -51,6 +54,7 @@ def count_tokens(messages: list) -> int:
     for msg in messages:
         total += 4
         total += len(enc.encode(msg.get("content", "")))
+    total += 2
     return total
 
 def build_system_prompt(sheet_data: str) -> str:
@@ -115,10 +119,13 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str) -> str:
     history.append({"role": "user", "content": user_question})
     messages = [{"role": "system", "content": system_prompt}] + history
 
-    token_count = count_tokens(messages)
-    total_tokens = token_count + 500
-    prev = int(redis_client.get(f"token_sum:{user_id}") or 0)
-    redis_client.set(f"token_sum:{user_id}", prev + total_tokens)
+    prompt_tokens = count_tokens(messages)
+    completion_tokens = 500
+    total_tokens = prompt_tokens + completion_tokens
+
+    redis_client.incrby(f"token_sum:{user_id}", total_tokens)
+    redis_client.incrby(f"token_input:{user_id}", prompt_tokens)
+    redis_client.incrby(f"token_output:{user_id}", completion_tokens)
 
     model_name = "gpt-3.5-turbo-16k" if total_tokens > 4096 else "gpt-3.5-turbo"
 
@@ -126,7 +133,7 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str) -> str:
         model=model_name,
         messages=messages,
         temperature=0.6,
-        max_tokens=500
+        max_tokens=completion_tokens
     )
 
     answer = response.choices[0].message.content.strip()
@@ -149,13 +156,15 @@ def webhook():
 
         if user_question.strip() == "12345":
             try:
-                tokens = int(redis_client.get(f"token_sum:{user_id}") or 0)
+                total = int(redis_client.get(f"token_sum:{user_id}") or 0)
+                input_toks = int(redis_client.get(f"token_input:{user_id}") or 0)
+                output_toks = int(redis_client.get(f"token_output:{user_id}") or 0)
+                usd = ((input_toks * PRICE_PER_1K_INPUT) + (output_toks * PRICE_PER_1K_OUTPUT))
+                ils = round(usd * ILS_CONVERSION, 2)
             except Exception as e:
-                print(f"⚠️ שגיאה בטוקנים: {e}")
-                tokens = 0
-            usd_cost = (tokens / 1000) * (0.001 + 0.002)
-            ils_cost = round(usd_cost * 3.7, 2)
-            return jsonify({"reply": f"🔢 סך הטוקנים: {tokens}\n💰 עלות משוערת: ₪{ils_cost}"})
+                print(f"⚠️ שגיאה בחישוב עלות: {e}")
+                total, ils = 0, 0
+            return jsonify({"reply": f"🔢 סך הטוקנים: {total}\n💰 עלות משוערת: ₪{ils}"})
 
         if get_last_message(user_id) == user_question:
             return jsonify({"reply": "רגע אחד... נראה שכבר עניתי על זה 😊"})
