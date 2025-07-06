@@ -1,4 +1,4 @@
-# ✅ שדרוג: fallback ל"מידע כללי", זיהוי שאלות כלליות, חישוב טוקנים לפי שיחה מלאה (12345)
+# ✅ הוספת Fallback למידע כללי + זיהוי מילות מפתח + מעקב טוקנים כולל
 
 from flask import Flask, request, jsonify
 from openai import OpenAI
@@ -22,7 +22,7 @@ redis_client = redis.Redis(
     decode_responses=True
 )
 
-# === Local Cache Setup ===
+# === Local Cache ===
 chat_cache = TTLCache(maxsize=1000, ttl=300)
 sheet_cache = TTLCache(maxsize=100, ttl=300)
 
@@ -39,12 +39,32 @@ sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/17e13cqXTMQ0a
 
 ROOMS = ["אחוזת השכן", "ההתערבות", "מקדש הקאמי", "אינפיניטי", "נרקוס"]
 DEFAULT_SHEET = "מידע כללי"
-GENERIC_KEYWORDS = ["איך", "טלפון", "מזמינים", "הנחה", "פתוח", "מגיעים"]
+
+# מילים כלליות שמפעילות fallback למידע כללי
+GENERAL_KEYWORDS = ["טלפון", "הנחה", "פתוח", "איך מגיעים", "איך מזמינים", "שעות", "נכים", "חניה"]
 
 # === OpenAI Setup ===
 openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
-# === Redis + Cache Chat Management ===
+def count_tokens(messages: list) -> int:
+    enc = tiktoken.encoding_for_model("gpt-3.5-turbo")
+    total = 0
+    for msg in messages:
+        total += 4
+        total += len(enc.encode(msg.get("content", "")))
+    return total
+
+# === Prompt ===
+def build_system_prompt(sheet_data: str) -> str:
+    return f"""
+אתה נציג שירות בשם שובל – עובד אמיתי במתחם חדרי בריחה.
+ענה תמיד בצורה אנושית, שירותית, קלילה, בגובה העיניים – לא רשמית ולא רובוטית.
+...
+הנה המידע שיש לך:
+{sheet_data}
+"""
+
+# === Redis Chat History ===
 def get_chat_history(user_id: str) -> list:
     if user_id in chat_cache:
         return chat_cache[user_id]
@@ -57,6 +77,12 @@ def save_chat_history(user_id: str, history: list):
     chat_cache[user_id] = history
     redis_client.setex(f"chat:{user_id}", 3600, json.dumps(history))
 
+def get_last_message(user_id: str) -> str:
+    return redis_client.get(f"last_msg:{user_id}")
+
+def set_last_message(user_id: str, message: str):
+    redis_client.setex(f"last_msg:{user_id}", 600, message)
+
 # === גיליון אחרון שנשלח ===
 def get_last_used_sheet(user_id: str) -> str:
     return redis_client.get(f"last_sheet:{user_id}") or DEFAULT_SHEET
@@ -64,26 +90,32 @@ def get_last_used_sheet(user_id: str) -> str:
 def set_last_used_sheet(user_id: str, sheet_name: str):
     redis_client.setex(f"last_sheet:{user_id}", 3600, sheet_name)
 
-# === Count Tokens ===
-def count_tokens(messages: list) -> int:
-    enc = tiktoken.encoding_for_model("gpt-3.5-turbo")
-    total = 0
-    for msg in messages:
-        total += 4
-        total += len(enc.encode(msg.get("content", "")))
-    return total
+# === זיהוי גיליונות + מילות כלליות ===
+def detect_relevant_sheets(user_id: str, question: str) -> list:
+    sheets = [room for room in ROOMS if room in question]
+    if not sheets and any(word in question for word in GENERAL_KEYWORDS):
+        sheets = [DEFAULT_SHEET]
+    elif not sheets:
+        sheets = [get_last_used_sheet(user_id)]
+    else:
+        set_last_used_sheet(user_id, sheets[0])
+    return sheets
 
-# === Prompt Template ===
-def build_system_prompt(sheet_data: str) -> str:
-    return f"""
-אתה נציג שירות בשם שובל – עובד אמיתי במתחם חדרי בריחה.
-ענה תמיד בצורה אנושית, שירותית, קלילה, בגובה העיניים – לא רשמית ולא רובוטית.
-...
-הנה המידע שיש לך:
-{sheet_data}
-"""
+# === טעינת גליונות עם קאש ===
+def get_sheet_data(sheet_name: str) -> str:
+    if sheet_name in sheet_cache:
+        return sheet_cache[sheet_name]
+    try:
+        ws = sheet.worksheet(sheet_name)
+        rows = ws.get_all_values()
+        data = f"-- {sheet_name} --\n" + "\n".join([" | ".join(r) for r in rows])
+        sheet_cache[sheet_name] = data
+        return data
+    except Exception as e:
+        print(f"⚠️ שגיאה בגליון {sheet_name}: {e}")
+        return ""
 
-# === GPT Call ===
+# === OpenAI Call ===
 def ask_gpt(user_id: str, user_question: str, sheet_data: str) -> str:
     system_prompt = build_system_prompt(sheet_data)
     history = get_chat_history(user_id)
@@ -91,8 +123,7 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str) -> str:
     messages = [{"role": "system", "content": system_prompt}] + history
 
     token_count = count_tokens(messages)
-    redis_client.setex(f"tokens:{user_id}", 3600, str(token_count))
-    print(f"🔢 Token count: {token_count}")
+    redis_client.set(f"token_sum:{user_id}", token_count)
 
     if token_count <= 4096:
         model_name = "gpt-3.5-turbo"
@@ -116,61 +147,36 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str) -> str:
     save_chat_history(user_id, history)
     return answer
 
-# === Detect Relevant Sheets ===
-def detect_relevant_sheets(user_id: str, question: str) -> list:
-    sheets = [room for room in ROOMS if room in question]
-    if sheets:
-        set_last_used_sheet(user_id, sheets[0])
-        return sheets
-    if any(keyword in question for keyword in GENERIC_KEYWORDS):
-        return [DEFAULT_SHEET]
-    return [get_last_used_sheet(user_id)]
-
-# === Sheet Caching ===
-def get_sheet_data(sheet_name: str) -> str:
-    if sheet_name in sheet_cache:
-        return sheet_cache[sheet_name]
-    try:
-        ws = sheet.worksheet(sheet_name)
-        rows = ws.get_all_values()
-        data = f"-- {sheet_name} --\n" + "\n".join([" | ".join(r) for r in rows])
-        sheet_cache[sheet_name] = data
-        return data
-    except Exception as e:
-        print(f"⚠️ שגיאה בגליון {sheet_name}: {e}")
-        return ""
-
-# === Handle Messages ===
-def handle_user_message(user_id: str, user_question: str) -> str:
-    if user_question.strip() == "12345":
-        tokens = redis_client.get(f"tokens:{user_id}") or "0"
-        return f"כמות הטוקנים שצרכנו עד כה: {tokens}"
-
-    last = redis_client.get(f"last_msg:{user_id}")
-    if last == user_question:
-        return "רגע אחד... נראה שכבר עניתי על זה 😊"
-    redis_client.setex(f"last_msg:{user_id}", 600, user_question)
-
-    sheets = detect_relevant_sheets(user_id, user_question)
-    combined_data = [get_sheet_data(name) for name in sheets if name]
-    combined_data = [d for d in combined_data if d.strip()]
-    if not combined_data:
-        return "שגיאה: לא הצלחנו לקרוא מידע רלוונטי."
-
-    full_context = "\n\n".join(combined_data)
-    return ask_gpt(user_id, user_question, full_context)
-
-# === Routes ===
+# === Router ===
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
         data = request.get_json(force=True)
         user_question = data.get("message")
         user_id = data.get("user_id")
+
         if not user_question or not user_id:
             return jsonify({"error": "Missing 'message' or 'user_id'"}), 400
-        reply = handle_user_message(user_id, user_question)
+
+        # 🔢 בקשת טוקנים
+        if user_question.strip() == "12345":
+            tokens = redis_client.get(f"token_sum:{user_id}") or 0
+            return jsonify({"reply": f"🔢 סך הטוקנים בשיחה זו: {tokens}"})
+
+        if get_last_message(user_id) == user_question:
+            return jsonify({"reply": "רגע אחד... נראה שכבר עניתי על זה 😊"})
+        set_last_message(user_id, user_question)
+
+        sheets = detect_relevant_sheets(user_id, user_question)
+        combined_data = [get_sheet_data(name) for name in sheets if name]
+        full_context = "\n\n".join([d for d in combined_data if d.strip()])
+
+        if not full_context:
+            return jsonify({"reply": "שגיאה: לא הצלחנו לקרוא מידע רלוונטי."})
+
+        reply = ask_gpt(user_id, user_question, full_context)
         return jsonify({"reply": reply})
+
     except Exception as e:
         return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
 
