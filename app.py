@@ -1,4 +1,4 @@
-# ✅ WhatsApp GPT bot webhook + צבירה מצטברת + עלות שיחה בש"ח
+# ✅ WhatsApp GPT bot webhook + צבירה מצטברת + עלות שיחה בש"ח + החלפה אוטומטית ל-GPT-4-Turbo אם חורגים מטוקנים
 
 from flask import Flask, request, jsonify
 from openai import OpenAI
@@ -44,12 +44,16 @@ GENERAL_KEYWORDS = ["טלפון", "הנחה", "פתוח", "איך מגיעים",
 
 openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
-PRICE_PER_1K_INPUT = 0.001  # $0.001
-PRICE_PER_1K_OUTPUT = 0.002 # $0.002
+PRICE_PER_1K_INPUT = 0.001
+PRICE_PER_1K_OUTPUT = 0.002
 ILS_CONVERSION = 3.7
 
-def count_tokens(messages: list) -> int:
-    enc = tiktoken.encoding_for_model("gpt-3.5-turbo")
+MAX_TOKENS_GPT3 = 4096
+MAX_TOKENS_GPT4 = 128000
+
+
+def count_tokens(messages: list, model: str = "gpt-3.5-turbo") -> int:
+    enc = tiktoken.encoding_for_model(model)
     total = 0
     for msg in messages:
         total += 4
@@ -114,20 +118,29 @@ def get_sheet_data(sheet_name: str) -> str:
         return ""
 
 def ask_gpt(user_id: str, user_question: str, sheet_data: str) -> str:
-    system_prompt = build_system_prompt(sheet_data)
     history = get_chat_history(user_id)
     history.append({"role": "user", "content": user_question})
+    system_prompt = build_system_prompt(sheet_data)
     messages = [{"role": "system", "content": system_prompt}] + history
 
     prompt_tokens = count_tokens(messages)
     completion_tokens = 500
     total_tokens = prompt_tokens + completion_tokens
 
+    model_name = "gpt-3.5-turbo"
+    max_allowed = MAX_TOKENS_GPT3
+    if total_tokens > MAX_TOKENS_GPT3:
+        model_name = "gpt-4-turbo"
+        max_allowed = MAX_TOKENS_GPT4
+        prompt_tokens = count_tokens(messages, model="gpt-4-turbo")
+        total_tokens = prompt_tokens + completion_tokens
+
+    if total_tokens > max_allowed:
+        return "⚠️ השאלה וההקשר ארוכים מדי גם ל-GPT-4-Turbo. נסה לקצר."
+
     redis_client.incrby(f"token_sum:{user_id}", total_tokens)
     redis_client.incrby(f"token_input:{user_id}", prompt_tokens)
     redis_client.incrby(f"token_output:{user_id}", completion_tokens)
-
-    model_name = "gpt-3.5-turbo-16k" if total_tokens > 4096 else "gpt-3.5-turbo"
 
     response = openai_client.chat.completions.create(
         model=model_name,
