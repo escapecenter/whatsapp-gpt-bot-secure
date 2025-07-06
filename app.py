@@ -1,4 +1,3 @@
-
 from flask import Flask, request, jsonify
 from openai import OpenAI
 import gspread
@@ -14,7 +13,6 @@ import traceback
 
 app = Flask(__name__)
 
-# === Redis Setup ===
 redis_client = redis.Redis(
     host=os.getenv("REDIS_HOST", "localhost"),
     port=int(os.getenv("REDIS_PORT", 6379)),
@@ -23,11 +21,9 @@ redis_client = redis.Redis(
     decode_responses=True
 )
 
-# === Local Cache ===
 chat_cache = TTLCache(maxsize=1000, ttl=300)
 sheet_cache = TTLCache(maxsize=100, ttl=300)
 
-# === Google Sheets Setup ===
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 creds_json = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
 if not creds_json:
@@ -50,7 +46,6 @@ PRICE_PER_1K_OUTPUT = 0.002
 ILS_CONVERSION = 3.7
 MAX_TOKENS_GPT3 = 4096
 MAX_TOKENS_GPT4 = 128000
-
 
 def count_tokens(messages: list, model: str = "gpt-3.5-turbo") -> int:
     enc = tiktoken.encoding_for_model(model)
@@ -132,16 +127,16 @@ def get_sheet_data(sheet_name: str) -> str:
         print(f"⚠️ שגיאה בגליון {sheet_name}: {e}")
         return ""
 
-def log_to_sheet(user_id: str, model: str, q: str, a: str, tokens: int):
+def log_to_sheet(user_id: str, model: str, q: str, a: str, tokens: int, sheet_name: str):
     try:
         log_worksheet.append_row([
             datetime.now().strftime("%Y-%m-%d %H:%M"),
-            user_id, model, q[:300], a[:300], tokens
+            user_id, model, q[:300], a[:300], tokens, sheet_name
         ])
     except Exception as e:
         print(f"⚠️ שגיאה בלוג לגיליון: {e}")
 
-def ask_gpt(user_id: str, user_question: str, sheet_data: str) -> str:
+def ask_gpt(user_id: str, user_question: str, sheet_data: str, sheet_names: list) -> str:
     history = get_chat_history(user_id)
     history.append({"role": "user", "content": user_question})
     system_prompt = build_system_prompt(sheet_data)
@@ -177,9 +172,12 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str) -> str:
     answer = re.sub(r"(?<!\\S)/(.*?)(?<!\\s)/", r"\1", answer)
     answer = re.sub(r"איך אני יכול לעזור.*?$", "", answer).strip()
 
+    if sheet_names:
+        answer += f"\n\n📄 נלקח מתוך: {', '.join(sheet_names)}"
+
     history.append({"role": "assistant", "content": answer})
     save_chat_history(user_id, history)
-    log_to_sheet(user_id, model_name, user_question, answer, total_tokens)
+    log_to_sheet(user_id, model_name, user_question, answer, total_tokens, ', '.join(sheet_names))
     return answer
 
 @app.route("/webhook", methods=["POST"])
@@ -219,7 +217,7 @@ def webhook():
         if not full_context:
             return jsonify({"reply": "שגיאה: לא הצלחנו לקרוא מידע רלוונטי."})
 
-        reply = ask_gpt(user_id, user_question, full_context)
+        reply = ask_gpt(user_id, user_question, full_context, sheets)
         return jsonify({"reply": reply})
 
     except Exception as e:
