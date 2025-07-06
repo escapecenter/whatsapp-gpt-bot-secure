@@ -1,4 +1,4 @@
-# ✅ הוספת צבירה מצטברת של token_sum + חישוב עלות שיחה בש"ח
+# ✅ הוספת צבירה מצטברת של token_sum + חישוב עלות שיחה בש"
 
 from flask import Flask, request, jsonify
 from openai import OpenAI
@@ -10,6 +10,7 @@ import re
 import redis
 import tiktoken
 from cachetools import TTLCache
+import traceback
 
 app = Flask(__name__)
 
@@ -147,7 +148,11 @@ def webhook():
             return jsonify({"error": "Missing 'message' or 'user_id'"}), 400
 
         if user_question.strip() == "12345":
-            tokens = int(redis_client.get(f"token_sum:{user_id}") or 0)
+            try:
+                tokens = int(redis_client.get(f"token_sum:{user_id}") or 0)
+            except Exception as e:
+                print(f"⚠️ שגיאה בטוקנים: {e}")
+                tokens = 0
             usd_cost = (tokens / 1000) * (0.001 + 0.002)
             ils_cost = round(usd_cost * 3.7, 2)
             return jsonify({"reply": f"🔢 סך הטוקנים: {tokens}\n💰 עלות משוערת: ₪{ils_cost}"})
@@ -167,6 +172,7 @@ def webhook():
         return jsonify({"reply": reply})
 
     except Exception as e:
+        print("❌ שגיאה כללית:", traceback.format_exc())
         return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
 
 @app.route("/", methods=["GET"])
