@@ -1,4 +1,4 @@
-# ✅ הוספת Fallback למידע כללי + זיהוי מילות מפתח + חישוב עלות שיחה בש"ח
+# ✅ הוספת צבירה מצטברת של token_sum + חישוב עלות שיחה בש"ח
 
 from flask import Flask, request, jsonify
 from openai import OpenAI
@@ -115,8 +115,9 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str) -> str:
     messages = [{"role": "system", "content": system_prompt}] + history
 
     token_count = count_tokens(messages)
-    total_tokens = token_count + 500  # כולל התשובה (max_tokens)
-    redis_client.set(f"token_sum:{user_id}", total_tokens)
+    total_tokens = token_count + 500
+    prev = int(redis_client.get(f"token_sum:{user_id}") or 0)
+    redis_client.set(f"token_sum:{user_id}", prev + total_tokens)
 
     model_name = "gpt-3.5-turbo-16k" if total_tokens > 4096 else "gpt-3.5-turbo"
 
@@ -147,7 +148,7 @@ def webhook():
 
         if user_question.strip() == "12345":
             tokens = int(redis_client.get(f"token_sum:{user_id}") or 0)
-            usd_cost = (tokens / 1000) * (0.001 + 0.002)  # prompt+completion
+            usd_cost = (tokens / 1000) * (0.001 + 0.002)
             ils_cost = round(usd_cost * 3.7, 2)
             return jsonify({"reply": f"🔢 סך הטוקנים: {tokens}\n💰 עלות משוערת: ₪{ils_cost}"})
 
