@@ -1,3 +1,5 @@
+# ✅ WhatsApp GPT bot webhook – כולל לוג מלא עם מחיר מדויק בש"ח לפי מודל GPT
+
 from flask import Flask, request, jsonify
 from openai import OpenAI
 import gspread
@@ -41,8 +43,10 @@ GENERAL_KEYWORDS = ["טלפון", "הנחה", "פתוח", "איך מגיעים",
 
 openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
-PRICE_PER_1K_INPUT = 0.001
-PRICE_PER_1K_OUTPUT = 0.002
+PRICING = {
+    "gpt-3.5-turbo": {"input": 0.0015, "output": 0.002},
+    "gpt-4-turbo": {"input": 0.01, "output": 0.03},
+}
 ILS_CONVERSION = 3.7
 MAX_TOKENS_GPT3 = 4096
 MAX_TOKENS_GPT4 = 128000
@@ -126,11 +130,11 @@ def get_sheet_data(sheet_name: str) -> str:
         print(f"⚠️ שגיאה בגליון {sheet_name}: {e}")
         return ""
 
-def log_to_sheet(user_id: str, model: str, q: str, a: str, tokens: int, sheet_name: str):
+def log_to_sheet(user_id: str, model: str, q: str, a: str, tokens: int, price_ils: float, sheet_name: str):
     try:
         log_worksheet.append_row([
             datetime.now().strftime("%Y-%m-%d %H:%M"),
-            user_id, model, q[:300], a[:300], tokens, sheet_name
+            user_id, model, q[:300], a, tokens, f"₪{price_ils}", sheet_name
         ])
     except Exception as e:
         print(f"⚠️ שגיאה בלוג לגיליון: {e}")
@@ -168,15 +172,16 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str, sheet_names: list
     )
 
     answer = response.choices[0].message.content.strip()
-    answer = re.sub(r"(?<!\\S)/(.*?)(?<!\\s)/", r"\1", answer)
+    answer = re.sub(r"(?<!\\S)/(.*?)(?<!\\s)/", r"\\1", answer)
     answer = re.sub(r"איך אני יכול לעזור.*?$", "", answer).strip()
-
-    if sheet_names:
-        answer += f"\n\n📄 נלקח מתוך: {', '.join(sheet_names)}"
 
     history.append({"role": "assistant", "content": answer})
     save_chat_history(user_id, history)
-    log_to_sheet(user_id, model_name, user_question, answer, total_tokens, ', '.join(sheet_names))
+
+    price_usd = (prompt_tokens * PRICING[model_name]["input"] + completion_tokens * PRICING[model_name]["output"]) / 1000
+    price_ils = round(price_usd * ILS_CONVERSION, 2)
+
+    log_to_sheet(user_id, model_name, user_question, answer, total_tokens, price_ils, ', '.join(sheet_names))
     return answer
 
 @app.route("/webhook", methods=["POST"])
@@ -198,7 +203,9 @@ def webhook():
                 total = int(redis_client.get(f"token_sum:{user_id}") or 0)
                 input_toks = int(redis_client.get(f"token_input:{user_id}") or 0)
                 output_toks = int(redis_client.get(f"token_output:{user_id}") or 0)
-                usd = ((input_toks * PRICE_PER_1K_INPUT) + (output_toks * PRICE_PER_1K_OUTPUT))
+
+                model = "gpt-4-turbo" if total > MAX_TOKENS_GPT3 else "gpt-3.5-turbo"
+                usd = ((input_toks * PRICING[model]["input"] + output_toks * PRICING[model]["output"]) / 1000)
                 ils = round(usd * ILS_CONVERSION, 2)
             except Exception as e:
                 print(f"⚠️ שגיאה בחישוב עלות: {e}")
