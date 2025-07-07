@@ -134,7 +134,7 @@ def log_to_sheet(user_id: str, model: str, q: str, a: str, tokens: int, price_il
     try:
         log_worksheet.append_row([
             datetime.now().strftime("%Y-%m-%d %H:%M"),
-            user_id, model, q[:300], a, tokens, f"₪{price_ils}", sheet_name
+            user_id, model, q[:300], a[:5000], tokens, f"₪{price_ils}", sheet_name
         ])
     except Exception as e:
         print(f"⚠️ שגיאה בלוג לגיליון: {e}")
@@ -183,56 +183,3 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str, sheet_names: list
 
     log_to_sheet(user_id, model_name, user_question, answer, total_tokens, price_ils, ', '.join(sheet_names))
     return answer
-
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    try:
-        data = request.get_json(force=True)
-        user_question = data.get("message")
-        user_id = data.get("user_id")
-
-        if not user_question or not user_id:
-            return jsonify({"error": "Missing 'message' or 'user_id'"}), 400
-
-        if user_question.strip().lower() == "סיים שיחה":
-            redis_client.delete(f"chat:{user_id}", f"token_sum:{user_id}", f"token_input:{user_id}", f"token_output:{user_id}")
-            return jsonify({"reply": "השיחה אופסה בהצלחה ✅"})
-
-        if user_question.strip() == "12345":
-            try:
-                total = int(redis_client.get(f"token_sum:{user_id}") or 0)
-                input_toks = int(redis_client.get(f"token_input:{user_id}") or 0)
-                output_toks = int(redis_client.get(f"token_output:{user_id}") or 0)
-
-                model = "gpt-4-turbo" if total > MAX_TOKENS_GPT3 else "gpt-3.5-turbo"
-                usd = ((input_toks * PRICING[model]["input"] + output_toks * PRICING[model]["output"]) / 1000)
-                ils = round(usd * ILS_CONVERSION, 2)
-            except Exception as e:
-                print(f"⚠️ שגיאה בחישוב עלות: {e}")
-                total, ils = 0, 0
-            return jsonify({"reply": f"🔢 סך הטוקנים: {total}\n💰 עלות משוערת: ₪{ils}"})
-
-        if get_last_message(user_id) == user_question:
-            return jsonify({"reply": "רגע אחד... נראה שכבר עניתי על זה 😊"})
-        set_last_message(user_id, user_question)
-
-        sheets = detect_relevant_sheets(user_id, user_question)
-        combined_data = [get_sheet_data(name) for name in sheets if name]
-        full_context = "\n\n".join([d for d in combined_data if d.strip()])
-
-        if not full_context:
-            return jsonify({"reply": "שגיאה: לא הצלחנו לקרוא מידע רלוונטי."})
-
-        reply = ask_gpt(user_id, user_question, full_context, sheets)
-        return jsonify({"reply": reply})
-
-    except Exception as e:
-        print("❌ שגיאה כללית:", traceback.format_exc())
-        return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
-
-@app.route("/", methods=["GET"])
-def index():
-    return "✅ WhatsApp GPT bot is alive"
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
