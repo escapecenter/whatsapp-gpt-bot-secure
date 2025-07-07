@@ -1,3 +1,5 @@
+# ✅ WhatsApp GPT bot webhook – כולל לוג מלא עם מחיר מדויק בש"ח לפי מודל GPT
+
 from flask import Flask, request, jsonify
 from openai import OpenAI
 import gspread
@@ -63,22 +65,7 @@ def build_system_prompt(sheet_data: str) -> str:
     return f"""
 אתה נציג שירות אנושי במתחם חדרי הבריחה של Escape Center.
 קוראים לך שובל.
-אתה מכיר לעומק כל פרט במתחם – כולל כל אחד מחדרי הבריחה, שעות הפעילות, מבצעים, הנחות, התאמות, אירועים, תשלומים, כתובת, תנאי ביטול, שוברי מתנה, נגישות, רמות קושי ועוד.
-
-סגנון הדיבור שלך:
-אתה תמיד עונה כמו נציג אנושי אמיתי – בשפה שירותית, קלילה, חכמה ומדויקת.
-אל תאמר "שלום" – זה כבר נאמר קודם. אל תזכיר שאתה בינה מלאכותית.
-תמיד תענה בדיוק את התשובה שנמצאת לך במידע המצורף
-אם אין תשובה מוכנה לשאלה – תפנה בצורה יפה לשירות הטלפוני 📞 050-5255144.
-
-אם מבקשים המלצה – שאל קודם:
-- כמה משתתפים?
-- גילאים?
-- שיחקו כבר אצלנו?
-- מה הסגנון המועדף?
-- דרגת קושי?
-
-הנה המידע שיש לך:
+...
 {sheet_data}
 """
 
@@ -148,7 +135,7 @@ def log_to_sheet(user_id: str, model: str, q: str, a: str, tokens: int, price_il
             q[:300],
             a[:5000],
             tokens,
-            f"₪{price_ils:.2f}",
+            f"₪{price_ils}",
             sheet_name
         ])
     except Exception as e:
@@ -166,14 +153,12 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str, sheet_names: list
     total_tokens = prompt_tokens + completion_tokens
 
     model_name = "gpt-3.5-turbo"
-    max_allowed = MAX_TOKENS_GPT3
     if total_tokens > MAX_TOKENS_GPT3:
         model_name = "gpt-4-turbo"
-        max_allowed = MAX_TOKENS_GPT4
         prompt_tokens = count_tokens(messages, model=model_name)
         total_tokens = prompt_tokens + completion_tokens
 
-    if total_tokens > max_allowed:
+    if total_tokens > MAX_TOKENS_GPT4:
         return "⚠️ השאלה וההקשר ארוכים מדי גם ל-GPT-4-Turbo. נסה לקצר."
 
     redis_client.incrby(f"token_sum:{user_id}", total_tokens)
@@ -199,3 +184,60 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str, sheet_names: list
 
     log_to_sheet(user_id, model_name, user_question, answer, total_tokens, price_ils, ', '.join(sheet_names))
     return answer
+
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    try:
+        data = request.get_json(force=True)
+        user_question = data.get("message")
+        user_id = data.get("user_id")
+
+        if not user_question or not user_id:
+            return jsonify({"error": "Missing 'message' or 'user_id'"}), 400
+
+        if user_question.strip().lower() == "סיים שיחה":
+            redis_client.delete(f"chat:{user_id}", f"token_sum:{user_id}", f"token_input:{user_id}", f"token_output:{user_id}")
+            return jsonify({"reply": "השיחה אופסה בהצלחה ✅"})
+
+        if user_question.strip() == "12345":
+            try:
+                total = int(redis_client.get(f"token_sum:{user_id}") or 0)
+                input_toks = int(redis_client.get(f"token_input:{user_id}") or 0)
+                output_toks = int(redis_client.get(f"token_output:{user_id}") or 0)
+
+                model = "gpt-4-turbo" if total > MAX_TOKENS_GPT3 else "gpt-3.5-turbo"
+                usd = ((input_toks * PRICING[model]["input"] + output_toks * PRICING[model]["output"]) / 1000)
+                ils = round(usd * ILS_CONVERSION, 2)
+            except Exception as e:
+                print(f"⚠️ שגיאה בחישוב עלות: {e}")
+                total, ils = 0, 0
+            return jsonify({"reply": f"🔢 סך הטוקנים: {total}\n💰 עלות משוערת: ₪{ils}"})
+
+        if get_last_message(user_id) == user_question:
+            return jsonify({"reply": "רגע אחד... נראה שכבר עניתי על זה 😊"})
+        set_last_message(user_id, user_question)
+
+        sheets = detect_relevant_sheets(user_id, user_question)
+        combined_data = [get_sheet_data(name) for name in sheets if name]
+        full_context = "\n\n".join([d for d in combined_data if d.strip()])
+
+        if not full_context:
+            return jsonify({"reply": "שגיאה: לא הצלחנו לקרוא מידע רלוונטי."})
+
+        reply = ask_gpt(user_id, user_question, full_context, sheets)
+        return jsonify({"reply": reply})
+
+    except Exception as e:
+        print("❌ שגיאה כללית:", traceback.format_exc())
+        return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
+
+
+@app.route("/", methods=["GET"])
+def index():
+    return "✅ WhatsApp GPT bot is alive"
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
