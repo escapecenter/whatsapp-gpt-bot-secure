@@ -128,12 +128,15 @@ def get_sheet_data(sheet_name: str) -> str:
 
 def log_to_sheet(user_id: str, model: str, q: str, a: str, tokens: int, price_ils: float, sheet_name: str):
     try:
+        chunks = [a[i:i+5000] for i in range(0, len(a), 5000)]
+        while len(chunks) < 3:
+            chunks.append("")
         log_worksheet.append_row([
             datetime.now().strftime("%Y-%m-%d %H:%M"),
             user_id,
             model,
             q[:300],
-            a[:5000],
+            chunks[0], chunks[1], chunks[2],
             tokens,
             f"₪{price_ils}",
             sheet_name
