@@ -1,5 +1,3 @@
-# ✅ WhatsApp GPT bot webhook – כולל לוג מלא עם מחיר מדויק בש"ח לפי מודל GPT
-
 from flask import Flask, request, jsonify
 from openai import OpenAI
 import gspread
@@ -51,6 +49,7 @@ ILS_CONVERSION = 3.7
 MAX_TOKENS_GPT3 = 4096
 MAX_TOKENS_GPT4 = 128000
 
+
 def count_tokens(messages: list, model: str = "gpt-3.5-turbo") -> int:
     enc = tiktoken.encoding_for_model(model)
     total = 0
@@ -58,6 +57,7 @@ def count_tokens(messages: list, model: str = "gpt-3.5-turbo") -> int:
         total += 4 + len(enc.encode(msg.get("content", "")))
     total += 2
     return total
+
 
 def build_system_prompt(sheet_data: str) -> str:
     return f"""
@@ -82,6 +82,7 @@ def build_system_prompt(sheet_data: str) -> str:
 {sheet_data}
 """
 
+
 def get_chat_history(user_id: str) -> list:
     if user_id in chat_cache:
         return chat_cache[user_id]
@@ -90,22 +91,28 @@ def get_chat_history(user_id: str) -> list:
     chat_cache[user_id] = history
     return history[-8:]
 
+
 def save_chat_history(user_id: str, history: list):
     trimmed = history[-8:]
     chat_cache[user_id] = trimmed
     redis_client.setex(f"chat:{user_id}", 3600, json.dumps(trimmed))
 
+
 def get_last_message(user_id: str) -> str:
     return redis_client.get(f"last_msg:{user_id}")
+
 
 def set_last_message(user_id: str, message: str):
     redis_client.setex(f"last_msg:{user_id}", 10, message)
 
+
 def get_last_used_sheet(user_id: str) -> str:
     return redis_client.get(f"last_sheet:{user_id}") or DEFAULT_SHEET
 
+
 def set_last_used_sheet(user_id: str, sheet_name: str):
     redis_client.setex(f"last_sheet:{user_id}", 3600, sheet_name)
+
 
 def detect_relevant_sheets(user_id: str, question: str) -> list:
     sheets = [room for room in ROOMS if room in question]
@@ -116,6 +123,7 @@ def detect_relevant_sheets(user_id: str, question: str) -> list:
     else:
         set_last_used_sheet(user_id, sheets[0])
     return list(set(sheets))
+
 
 def get_sheet_data(sheet_name: str) -> str:
     if sheet_name in sheet_cache:
@@ -130,14 +138,22 @@ def get_sheet_data(sheet_name: str) -> str:
         print(f"⚠️ שגיאה בגליון {sheet_name}: {e}")
         return ""
 
+
 def log_to_sheet(user_id: str, model: str, q: str, a: str, tokens: int, price_ils: float, sheet_name: str):
     try:
         log_worksheet.append_row([
             datetime.now().strftime("%Y-%m-%d %H:%M"),
-            user_id, model, q[:300], a[:5000], tokens, f"₪{price_ils}", sheet_name
+            user_id,
+            model,
+            q[:300],
+            a[:5000],
+            tokens,
+            f"₪{price_ils:.2f}",
+            sheet_name
         ])
     except Exception as e:
         print(f"⚠️ שגיאה בלוג לגיליון: {e}")
+
 
 def ask_gpt(user_id: str, user_question: str, sheet_data: str, sheet_names: list) -> str:
     history = get_chat_history(user_id)
