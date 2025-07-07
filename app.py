@@ -82,6 +82,20 @@ def build_system_prompt(sheet_data: str) -> str:
 {sheet_data}
 """
 
+def try_load_valid_sheets(user_id: str, question: str) -> tuple:
+    candidates = detect_relevant_sheets(user_id, question)
+    valid = []
+    combined = []
+    for sheet_name in candidates:
+        data = get_sheet_data(sheet_name)
+        if any(word in data for word in question.split()):
+            valid.append(sheet_name)
+            combined.append(data)
+    if not valid:
+        data = get_sheet_data(DEFAULT_SHEET)
+        return [DEFAULT_SHEET], data
+    return valid, "\n\n".join(combined)
+
 def get_chat_history(user_id: str) -> list:
     if user_id in chat_cache:
         return chat_cache[user_id]
@@ -220,9 +234,7 @@ def webhook():
             return jsonify({"reply": "רגע אחד... נראה שכבר עניתי על זה 😊"})
         set_last_message(user_id, user_question)
 
-        sheets = detect_relevant_sheets(user_id, user_question)
-        combined_data = [get_sheet_data(name) for name in sheets if name]
-        full_context = "\n\n".join([d for d in combined_data if d.strip()])
+        sheets, full_context = try_load_valid_sheets(user_id, user_question)
 
         if not full_context:
             return jsonify({"reply": "שגיאה: לא הצלחנו לקרוא מידע רלוונטי."})
