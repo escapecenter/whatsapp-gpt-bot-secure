@@ -242,7 +242,7 @@ def webhook():
 
     except Exception as e:
         print("❌ שגיאה כללית:", traceback.format_exc())
-        return jsonify({"data": {"reply": "שגיאה פנימית בשרת"}, "error": str(e)}}), 500
+        return jsonify({"data": {"reply": "שגיאה פנימית בשרת"}, "error": str(e)}), 500
 
 @app.route("/", methods=["GET"])
 def index():
