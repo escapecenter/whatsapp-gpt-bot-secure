@@ -1,5 +1,3 @@
-# ✅ WhatsApp GPT bot webhook – כולל לוג מלא עם מחיר מדויק בש"ח לפי מודל GPT
-
 from flask import Flask, request, jsonify
 from openai import OpenAI
 import gspread
@@ -210,11 +208,11 @@ def webhook():
         user_id = data.get("user_id")
 
         if not user_question or not user_id:
-            return jsonify({"error": "Missing 'message' or 'user_id'"}), 400
+            return jsonify({"data": {"reply": "שגיאה: חסר מזהה משתמש או הודעה"}}), 400
 
         if user_question.strip().lower() == "סיים שיחה":
             redis_client.delete(f"chat:{user_id}", f"token_sum:{user_id}", f"token_input:{user_id}", f"token_output:{user_id}")
-            return jsonify({"reply": "השיחה אופסה בהצלחה ✅"})
+            return jsonify({"data": {"reply": "השיחה אופסה בהצלחה ✅"}})
 
         if user_question.strip() == "12345":
             try:
@@ -228,23 +226,23 @@ def webhook():
             except Exception as e:
                 print(f"⚠️ שגיאה בחישוב עלות: {e}")
                 total, ils = 0, 0
-            return jsonify({"reply": f"🔢 סך הטוקנים: {total}\n💰 עלות משוערת: ₪{ils}"})
+            return jsonify({"data": {"reply": f"🔢 סך הטוקנים: {total}\n💰 עלות משוערת: ₪{ils}"}})
 
         if get_last_message(user_id) == user_question:
-            return jsonify({"reply": "רגע אחד... נראה שכבר עניתי על זה 😊"})
+            return jsonify({"data": {"reply": "רגע אחד... נראה שכבר עניתי על זה 😊"}})
         set_last_message(user_id, user_question)
 
         sheets, full_context = try_load_valid_sheets(user_id, user_question)
 
         if not full_context:
-            return jsonify({"reply": "שגיאה: לא הצלחנו לקרוא מידע רלוונטי."})
+            return jsonify({"data": {"reply": "שגיאה: לא הצלחנו לקרוא מידע רלוונטי."}})
 
         reply = ask_gpt(user_id, user_question, full_context, sheets)
-        return jsonify({"reply": reply})
+        return jsonify({"data": {"reply": reply}})
 
     except Exception as e:
         print("❌ שגיאה כללית:", traceback.format_exc())
-        return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
+        return jsonify({"data": {"reply": "שגיאה פנימית בשרת"}, "error": str(e)}}), 500
 
 @app.route("/", methods=["GET"])
 def index():
