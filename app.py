@@ -168,7 +168,7 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str, sheet_names: list
     messages = [{"role": "system", "content": system_prompt}] + history
 
     prompt_tokens = count_tokens(messages)
-    completion_tokens = 500
+    completion_tokens = 1000
     total_tokens = prompt_tokens + completion_tokens
 
     model_name = "gpt-3.5-turbo"
@@ -212,7 +212,7 @@ def webhook():
         user_id = data.get("user_id")
 
         if not user_question or not user_id:
-            return jsonify({"error": "Missing 'message' or 'user_id'"}), 400
+            return jsonify({"error": "Missing 'message' or 'user_id'"}), 200
 
         if user_question.strip().lower() == "סיים שיחה":
             redis_client.delete(f"chat:{user_id}", f"token_sum:{user_id}", f"token_input:{user_id}", f"token_output:{user_id}")
@@ -246,7 +246,7 @@ def webhook():
 
     except Exception as e:
         print("❌ שגיאה כללית:", traceback.format_exc())
-        return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
+        return jsonify({"error": "Internal Server Error", "details": str(e)}), 200
 
 @app.route("/", methods=["GET"])
 def index():
