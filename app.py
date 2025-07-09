@@ -197,7 +197,11 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str, sheet_names: list
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
-        data = request.get_json()
+        try:
+            data = request.get_json()
+        except Exception:
+            return jsonify({"error": "שגיאה בקריאת ההודעה – נסו שוב."}), 200
+
         user_question = data.get("message")
         user_id = data.get("user_id")
 
