@@ -1,12 +1,9 @@
-# ✅ WhatsApp GPT bot webhook – כולל לוג מלא עם מחיר מדויק בש"ח לפי מודל GPT
-
 from flask import Flask, request, jsonify
 from openai import OpenAI
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import os
 import json
-import re
 import redis
 import tiktoken
 from cachetools import TTLCache
@@ -41,7 +38,7 @@ ROOMS = ["אחוזת השכן", "ההתערבות", "מקדש הקאמי", "אי
 DEFAULT_SHEET = "מידע כללי"
 GENERAL_KEYWORDS = ["טלפון", "הנחה", "פתוח", "איך מגיעים", "איך מזמינים", "שעות", "נכים", "חניה"]
 
-openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 PRICING = {
     "gpt-3.5-turbo": {"input": 0.0015, "output": 0.002},
@@ -67,10 +64,10 @@ def build_system_prompt(sheet_data: str) -> str:
 
 סגנון הדיבור שלך:
 אתה תמיד עונה כמו נציג אנושי אמיתי – בשפה שירותית, קלילה, חכמה ומדויקת.
-אל תאמר "שלום" – זה כבר נאמר קודם. אל תזכיר שאתה בינה מלאכותית.
+אל תאמר שלום – זה כבר נאמר קודם. אל תזכיר שאתה בינה מלאכותית.
 תמיד תענה בדיוק את התשובה שנמצאת לך במידע המצורף
 אם אין תשובה מוכנה לשאלה, תבדוק אם אתה יכול לענות עליה מכל המידע שיש לך, אם לא – תפנה בצורה יפה לשירות הטלפוני 050-5255144.
-תענה תשובה תמיד עד 30 מילים 
+תענה תשובה תמיד עד 30 מילים
 אל תוסיף אימוגים או סמיילים - רק טקסט.
 תענה בחוכמה על השאלות-אתה המומחה של המתחם
 אם מבקשים המלצה – שאל קודם:
@@ -110,12 +107,6 @@ def save_chat_history(user_id: str, history: list):
     trimmed = history[-8:]
     chat_cache[user_id] = trimmed
     redis_client.setex(f"chat:{user_id}", 3600, json.dumps(trimmed))
-
-def get_last_message(user_id: str) -> str:
-    return redis_client.get(f"last_msg:{user_id}")
-
-def set_last_message(user_id: str, message: str):
-    redis_client.setex(f"last_msg:{user_id}", 10, message)
 
 def get_last_used_sheet(user_id: str) -> str:
     return redis_client.get(f"last_sheet:{user_id}") or DEFAULT_SHEET
@@ -178,7 +169,7 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str, sheet_names: list
         total_tokens = prompt_tokens + completion_tokens
 
     if total_tokens > MAX_TOKENS_GPT4:
-        return "⚠️ השאלה וההקשר ארוכים מדי גם ל-GPT-4-Turbo. נסה לקצר."
+        return "⚠️ השאלה וההקשר ארוכים מדי ל-GPT-4-Turbo. נסה לקצר."
 
     redis_client.incrby(f"token_sum:{user_id}", total_tokens)
     redis_client.incrby(f"token_input:{user_id}", prompt_tokens)
@@ -192,8 +183,7 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str, sheet_names: list
     )
 
     answer = response.choices[0].message.content.strip()
-    answer = re.sub(r"(?<!\\S)/(.*?)(?<!\\s)/", r"\\1", answer)
-    answer = re.sub(r"איך אני יכול לעזור.*?$", "", answer).strip()
+    answer = answer.replace('"', '')
 
     history.append({"role": "assistant", "content": answer})
     save_chat_history(user_id, history)
@@ -207,7 +197,7 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str, sheet_names: list
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
-        data = request.get_json(force=True)
+        data = request.get_json()
         user_question = data.get("message")
         user_id = data.get("user_id")
 
@@ -231,10 +221,6 @@ def webhook():
                 print(f"⚠️ שגיאה בחישוב עלות: {e}")
                 total, ils = 0, 0
             return jsonify({"reply": f"🔢 סך הטוקנים: {total}\n💰 עלות משוערת: ₪{ils}"})
-
-        if get_last_message(user_id) == user_question:
-            return jsonify({"reply": "רגע אחד... נראה שכבר עניתי על זה 😊"})
-        set_last_message(user_id, user_question)
 
         sheets, full_context = try_load_valid_sheets(user_id, user_question)
 
