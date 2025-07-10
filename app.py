@@ -9,6 +9,7 @@ import tiktoken
 from cachetools import TTLCache
 from datetime import datetime
 import traceback
+from difflib import get_close_matches
 
 app = Flask(__name__)
 
@@ -23,6 +24,9 @@ redis_client = redis.Redis(
 chat_cache = TTLCache(maxsize=1000, ttl=300)
 sheet_cache = TTLCache(maxsize=100, ttl=300)
 
+FAQ_MATCH_THRESHOLD = 0.65
+faq_data = []  # will load later when needed
+
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 creds_json = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
 if not creds_json:
@@ -33,6 +37,7 @@ creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
 sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/17e13cqXTMQ0aq6-EUpZmgvOKs0sM6OblxM3Wi1V3-FE/edit")
 log_worksheet = sheet.worksheet("שיחות")
+faq_worksheet = sheet.worksheet("מידע כללי")
 
 ROOMS = ["אחוזת השכן", "ההתערבות", "מקדש הקאמי", "אינפיניטי", "נרקוס"]
 DEFAULT_SHEET = "מידע כללי"
@@ -64,6 +69,23 @@ def build_system_prompt(sheet_data: str) -> str:
 הנה המידע שיש לך:
 {sheet_data}
 """
+
+def load_faq_data():
+    global faq_data
+    if not faq_data:
+        rows = faq_worksheet.get_all_records()
+        faq_data = rows
+
+def match_faq(user_question: str, threshold: float = FAQ_MATCH_THRESHOLD) -> tuple[str, str] | None:
+    load_faq_data()
+    questions = [row["שאלה"] for row in faq_data]
+    matches = get_close_matches(user_question, questions, n=1, cutoff=threshold)
+    if matches:
+        match = matches[0]
+        for row in faq_data:
+            if row["שאלה"] == match:
+                return row["תשובה"], match
+    return None
 
 def try_load_valid_sheets(user_id: str, question: str) -> tuple:
     candidates = detect_relevant_sheets(user_id, question)
@@ -121,7 +143,7 @@ def get_sheet_data(sheet_name: str) -> str:
         print(f"⚠️ שגיאה בגליון {sheet_name}: {e}")
         return ""
 
-def log_to_sheet(user_id: str, model: str, q: str, a: str, tokens: int, price_ils: float, sheet_name: str):
+def log_to_sheet(user_id: str, model: str, q: str, a: str, tokens: int, price_ils: float, sheet_name: str, source: str = "GPT", match: str = ""):
     try:
         log_worksheet.append_row([
             datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -131,7 +153,9 @@ def log_to_sheet(user_id: str, model: str, q: str, a: str, tokens: int, price_il
             a.replace("\n", " "),
             tokens,
             f"₪{price_ils}",
-            sheet_name
+            sheet_name,
+            source,
+            match
         ])
     except Exception as e:
         print(f"⚠️ שגיאה בלוג לגיליון: {e}")
@@ -143,7 +167,7 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str, sheet_names: list
     messages = [{"role": "system", "content": system_prompt}] + history
 
     prompt_tokens = count_tokens(messages)
-    completion_tokens = 300  # הגבלה ל־300 כדי למנוע timeout
+    completion_tokens = 300
     total_tokens = prompt_tokens + completion_tokens
 
     model_name = "gpt-3.5-turbo"
@@ -166,8 +190,7 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str, sheet_names: list
         max_tokens=completion_tokens
     )
 
-    answer = response.choices[0].message.content.strip()
-    answer = answer.replace('"', '').replace('\n', ' ').replace('\r', ' ').strip()
+    answer = response.choices[0].message.content.strip().replace('"', '').replace('\n', ' ').replace('\r', ' ').strip()
     print(f"📤 תשובה ללקוח {user_id}:\n{answer}")
 
     history.append({"role": "assistant", "content": answer})
@@ -176,17 +199,13 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str, sheet_names: list
     price_usd = (prompt_tokens * PRICING[model_name]["input"] + completion_tokens * PRICING[model_name]["output"]) / 1000
     price_ils = round(price_usd * ILS_CONVERSION, 2)
 
-    log_to_sheet(user_id, model_name, user_question, answer, total_tokens, price_ils, ', '.join(sheet_names))
+    log_to_sheet(user_id, model_name, user_question, answer, total_tokens, price_ils, ', '.join(sheet_names), source="GPT")
     return answer
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
-        try:
-            data = request.get_json()
-        except Exception:
-            return jsonify({"error": "שגיאה בקריאת ההודעה – נסו שוב."}), 200
-
+        data = request.get_json()
         user_question = data.get("message")
         user_id = data.get("user_id")
 
@@ -202,7 +221,6 @@ def webhook():
                 total = int(redis_client.get(f"token_sum:{user_id}") or 0)
                 input_toks = int(redis_client.get(f"token_input:{user_id}") or 0)
                 output_toks = int(redis_client.get(f"token_output:{user_id}") or 0)
-
                 model = "gpt-4-turbo" if total > MAX_TOKENS_GPT3 else "gpt-3.5-turbo"
                 usd = ((input_toks * PRICING[model]["input"] + output_toks * PRICING[model]["output"]) / 1000)
                 ils = round(usd * ILS_CONVERSION, 2)
@@ -211,8 +229,14 @@ def webhook():
                 total, ils = 0, 0
             return jsonify({"reply": f"🔢 סך הטוקנים: {total}\n💰 עלות משוערת: ₪{ils}"})
 
-        sheets, full_context = try_load_valid_sheets(user_id, user_question)
+        match = match_faq(user_question)
+        if match:
+            answer, matched_question = match
+            print(f"🔎 נמצאה התאמה לשאלה: {matched_question}")
+            log_to_sheet(user_id, "FAQ", user_question, answer, 0, 0, DEFAULT_SHEET, source="FAQ", match=matched_question)
+            return jsonify({"reply": answer})
 
+        sheets, full_context = try_load_valid_sheets(user_id, user_question)
         if not full_context:
             return jsonify({"reply": "שגיאה: לא הצלחנו לקרוא מידע רלוונטי."})
 
