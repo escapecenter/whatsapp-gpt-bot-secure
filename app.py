@@ -167,7 +167,7 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str, sheet_names: list
     messages = [{"role": "system", "content": system_prompt}] + history
 
     prompt_tokens = count_tokens(messages)
-    completion_tokens = 600
+    completion_tokens = 1200
     total_tokens = prompt_tokens + completion_tokens
 
     model_name = "gpt-3.5-turbo"
