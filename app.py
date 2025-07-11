@@ -1,3 +1,4 @@
+
 from flask import Flask, request, jsonify
 from openai import OpenAI
 import gspread
@@ -50,7 +51,7 @@ PRICING = {
     "gpt-4-turbo": {"input": 0.01, "output": 0.03},
 }
 ILS_CONVERSION = 3.7
-MAX_TOKENS_GPT3 = 4096
+MAX_TOKENS_GPT3 = 16000
 MAX_TOKENS_GPT4 = 128000
 
 def count_tokens(messages: list, model: str = "gpt-3.5-turbo") -> int:
