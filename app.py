@@ -358,7 +358,7 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str, sheet_names: list
     completion_tokens = 1200
     total_tokens = prompt_tokens + completion_tokens
 
-    model_name = "gpt-3.5-turbo-16k"
+    model_name = "gpt-3.5-turbo"
     if total_tokens > MAX_TOKENS_GPT3:
         model_name = "gpt-4-turbo"
         prompt_tokens = count_tokens(messages, model=model_name)
