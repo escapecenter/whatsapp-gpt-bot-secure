@@ -1,4 +1,3 @@
-
 from flask import Flask, request, jsonify
 from openai import OpenAI
 import gspread
@@ -26,7 +25,7 @@ chat_cache = TTLCache(maxsize=1000, ttl=300)
 sheet_cache = TTLCache(maxsize=100, ttl=300)
 
 FAQ_MATCH_THRESHOLD = 0.65
-faq_data = []  # will load later when needed
+faq_data = []
 
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 creds_json = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
@@ -64,6 +63,7 @@ def count_tokens(messages: list, model: str = "gpt-3.5-turbo") -> int:
 
 def build_system_prompt(sheet_data: str) -> str:
     return f"""
+  
 אתה שובל, נציג שירות אנושי וחברותי ממתחם חדרי הבריחה Escape Center – אחד מהמתחמים המובילים בישראל.
 רוב חדרי הבריחה שלנו נכנסו לרשימת 100 חדרי הבריחה הטובים בעולם, והמוניטין שלנו מבוסס על חוויות איכותיות, הפקה ברמה קולנועית ושירות מצוין.
 
@@ -267,16 +267,16 @@ def build_system_prompt(sheet_data: str) -> str:
 – כל ההנחות בתוקף בהצגת תעודה מתאימה בלבד
 – אין כפל מבצעים והנחות
 
-{sheet_data}
-"""
+
+    {sheet_data}
+    """
 
 def load_faq_data():
     global faq_data
     if not faq_data:
-        rows = faq_worksheet.get_all_records()
-        faq_data = rows
+        faq_data = faq_worksheet.get_all_records()
 
-def match_faq(user_question: str, threshold: float = FAQ_MATCH_THRESHOLD) -> tuple[str, str] | None:
+def match_faq(user_question: str, threshold: float = FAQ_MATCH_THRESHOLD):
     load_faq_data()
     questions = [row["שאלה"] for row in faq_data]
     matches = get_close_matches(user_question, questions, n=1, cutoff=threshold)
@@ -287,10 +287,22 @@ def match_faq(user_question: str, threshold: float = FAQ_MATCH_THRESHOLD) -> tup
                 return row["תשובה"], match
     return None
 
-def try_load_valid_sheets(user_id: str, question: str) -> tuple:
+def get_sheet_data(sheet_name: str) -> str:
+    if sheet_name in sheet_cache:
+        return sheet_cache[sheet_name]
+    try:
+        ws = sheet.worksheet(sheet_name)
+        rows = ws.get_all_values()
+        data = f"-- {sheet_name} --\n" + "\n".join([" | ".join(r) for r in rows])
+        sheet_cache[sheet_name] = data
+        return data
+    except Exception as e:
+        print(f"⚠️ שגיאה בגליון {sheet_name}: {e}")
+        return ""
+
+def try_load_valid_sheets(user_id: str, question: str):
     candidates = detect_relevant_sheets(user_id, question)
-    valid = []
-    combined = []
+    valid, combined = [], []
     for sheet_name in candidates:
         data = get_sheet_data(sheet_name)
         if any(word in data for word in question.split()):
@@ -314,48 +326,25 @@ def save_chat_history(user_id: str, history: list):
     chat_cache[user_id] = trimmed
     redis_client.setex(f"chat:{user_id}", 3600, json.dumps(trimmed))
 
-def get_last_used_sheet(user_id: str) -> str:
-    return redis_client.get(f"last_sheet:{user_id}") or DEFAULT_SHEET
-
-def set_last_used_sheet(user_id: str, sheet_name: str):
-    redis_client.setex(f"last_sheet:{user_id}", 3600, sheet_name)
-
 def detect_relevant_sheets(user_id: str, question: str) -> list:
     sheets = [room for room in ROOMS if room in question]
     if not sheets and any(word in question for word in GENERAL_KEYWORDS):
-        sheets = [DEFAULT_SHEET]
-    elif not sheets:
-        sheets = [get_last_used_sheet(user_id)]
-    else:
-        set_last_used_sheet(user_id, sheets[0])
-    return list(set(sheets))
+        return [DEFAULT_SHEET]
+    if not sheets:
+        sheets = [redis_client.get(f"last_sheet:{user_id}") or DEFAULT_SHEET]
+    redis_client.setex(f"last_sheet:{user_id}", 3600, sheets[0])
+    return sheets
 
-def get_sheet_data(sheet_name: str) -> str:
-    if sheet_name in sheet_cache:
-        return sheet_cache[sheet_name]
-    try:
-        ws = sheet.worksheet(sheet_name)
-        rows = ws.get_all_values()
-        data = f"-- {sheet_name} --\n" + "\n".join([" | ".join(r) for r in rows])
-        sheet_cache[sheet_name] = data
-        return data
-    except Exception as e:
-        print(f"⚠️ שגיאה בגליון {sheet_name}: {e}")
-        return ""
-
-def log_to_sheet(user_id: str, model: str, q: str, a: str, tokens: int, price_ils: float, sheet_name: str, source: str = "GPT", match: str = ""):
+def log_to_sheet(user_id, model, q, a, tokens, price_ils, sheet_name, source="GPT", match=""):
     try:
         log_worksheet.append_row([
             datetime.now().strftime("%Y-%m-%d %H:%M"),
-            user_id,
-            model,
+            user_id, model,
             q[:300].replace("\n", " "),
             a.replace("\n", " "),
             tokens,
             f"₪{price_ils}",
-            sheet_name,
-            source,
-            match
+            sheet_name, source, match
         ])
     except Exception as e:
         print(f"⚠️ שגיאה בלוג לגיליון: {e}")
@@ -363,14 +352,12 @@ def log_to_sheet(user_id: str, model: str, q: str, a: str, tokens: int, price_il
 def ask_gpt(user_id: str, user_question: str, sheet_data: str, sheet_names: list) -> str:
     history = get_chat_history(user_id)
     history.append({"role": "user", "content": user_question})
-    system_prompt = build_system_prompt(sheet_data)
-    messages = [{"role": "system", "content": system_prompt}] + history
+    messages = [{"role": "system", "content": build_system_prompt(sheet_data)}] + history
 
     prompt_tokens = count_tokens(messages)
     completion_tokens = 1200
     total_tokens = prompt_tokens + completion_tokens
 
-   
     model_name = "gpt-3.5-turbo-16k"
     if total_tokens > MAX_TOKENS_GPT3:
         model_name = "gpt-4-turbo"
@@ -380,27 +367,27 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str, sheet_names: list
     if total_tokens > MAX_TOKENS_GPT4:
         return "⚠️ השאלה וההקשר ארוכים מדי ל-GPT-4-Turbo. נסה לקצר."
 
+    try:
+        response = openai_client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            temperature=0.6,
+            max_tokens=completion_tokens
+        )
+    except Exception as e:
+        return f"⚠️ שגיאה מהשרת של OpenAI: {str(e)}"
+
+    answer = response.choices[0].message.content.strip().replace('"', '').replace('\n', ' ').replace('\r', ' ').strip()
+    history.append({"role": "assistant", "content": answer})
+    save_chat_history(user_id, history)
+
     redis_client.incrby(f"token_sum:{user_id}", total_tokens)
     redis_client.incrby(f"token_input:{user_id}", prompt_tokens)
     redis_client.incrby(f"token_output:{user_id}", completion_tokens)
 
-    response = openai_client.chat.completions.create(
-        model=model_name,
-        messages=messages,
-        temperature=0.6,
-        max_tokens=completion_tokens
-    )
-
-    answer = response.choices[0].message.content.strip().replace('"', '').replace('\n', ' ').replace('\r', ' ').strip()
-    print(f"📤 תשובה ללקוח {user_id}:\n{answer}")
-
-    history.append({"role": "assistant", "content": answer})
-    save_chat_history(user_id, history)
-
-    price_usd = (prompt_tokens * PRICING[model_name]["input"] + completion_tokens * PRICING[model_name]["output"]) / 1000
-    price_ils = round(price_usd * ILS_CONVERSION, 2)
-
-    log_to_sheet(user_id, model_name, user_question, answer, total_tokens, price_ils, ', '.join(sheet_names), source="GPT")
+    usd = (prompt_tokens * PRICING[model_name]["input"] + completion_tokens * PRICING[model_name]["output"]) / 1000
+    price_ils = round(usd * ILS_CONVERSION, 2)
+    log_to_sheet(user_id, model_name, user_question, answer, total_tokens, price_ils, ', '.join(sheet_names))
     return answer
 
 @app.route("/webhook", methods=["POST"])
@@ -426,14 +413,12 @@ def webhook():
                 usd = ((input_toks * PRICING[model]["input"] + output_toks * PRICING[model]["output"]) / 1000)
                 ils = round(usd * ILS_CONVERSION, 2)
             except Exception as e:
-                print(f"⚠️ שגיאה בחישוב עלות: {e}")
                 total, ils = 0, 0
             return jsonify({"reply": f"🔢 סך הטוקנים: {total}\n💰 עלות משוערת: ₪{ils}"})
 
         match = match_faq(user_question)
         if match:
             answer, matched_question = match
-            print(f"🔎 נמצאה התאמה לשאלה: {matched_question}")
             log_to_sheet(user_id, "FAQ", user_question, answer, 0, 0, DEFAULT_SHEET, source="FAQ", match=matched_question)
             return jsonify({"reply": answer})
 
@@ -445,7 +430,6 @@ def webhook():
         return jsonify({"reply": reply})
 
     except Exception as e:
-        print("❌ שגיאה כללית:", traceback.format_exc())
         return jsonify({"error": "Internal Server Error", "details": str(e)}), 200
 
 @app.route("/", methods=["GET"])
