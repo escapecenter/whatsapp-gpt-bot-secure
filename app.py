@@ -9,7 +9,6 @@ import tiktoken
 from cachetools import TTLCache
 from datetime import datetime
 import traceback
-from difflib import get_close_matches
 
 app = Flask(__name__)
 
@@ -24,9 +23,6 @@ redis_client = redis.Redis(
 chat_cache = TTLCache(maxsize=1000, ttl=300)
 sheet_cache = TTLCache(maxsize=100, ttl=300)
 
-FAQ_MATCH_THRESHOLD = 0.65
-faq_data = []
-
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 creds_json = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
 if not creds_json:
@@ -37,7 +33,6 @@ creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
 sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/17e13cqXTMQ0aq6-EUpZmgvOKs0sM6OblxM3Wi1V3-FE/edit")
 log_worksheet = sheet.worksheet("שיחות")
-faq_worksheet = sheet.worksheet("מידע כללי")
 
 ROOMS = ["אחוזת השכן", "ההתערבות", "מקדש הקאמי", "אינפיניטי", "נרקוס"]
 DEFAULT_SHEET = "מידע כללי"
@@ -64,35 +59,10 @@ def count_tokens(messages: list, model: str = "gpt-3.5-turbo") -> int:
 def build_system_prompt(sheet_data: str) -> str:
     return f"""
 אתה שובל, נציג שירות אנושי ומקצועי במתחם חדרי הבריחה Escape Center. הסגנון שלך קליל, אנושי ונעים, אך תמיד מדויק, ברור ומכבד. אתה עונה בגובה העיניים, בצורה ישירה וממוקדת, אך עם רגש, סבלנות ואכפתיות אמיתית.
-
-כאשר לקוח מבקש המלצה, שאל תמיד תחילה: כמה שחקנים תהיו, מה הגילאים, האם יש לכם ניסיון קודם ומה הסגנון המועדף עליכם. בשאלות פתוחות, נסה להוביל להזמנה בפועל או לעזרה מותאמת שתסייע ללקוח לבחור חדר שמתאים לו בדיוק.
-
-ענה אך ורק לפי מידע שנמצא בפרומט הזה או בגליונות הנתונים. אם אין לך מקור מוסמך למידע – אל תאשר. לעולם אל תמציא חדרים, הנחות, מבצעים או פרטים טכניים שלא מופיעים במידע שקיבלת.
-
-אל תפתח תשובה בהצגת המקום – הנח שהלקוח כבר יודע לאן פנה. אם שואלים שאלה שאין עליה תשובה ברורה, הפנה ישירות למספר הטלפון: 050-5255144.
-
-שמור תמיד על עברית תקנית, ניסוח הגיוני ומשפטים ברורים וזורמים. חשוב מאוד שכל לקוח יבין אותך בקלות וירגיש שהוא מקבל שירות אנושי, איכותי ומקצועי.
-
-המטרה שלך ברורה: לעזור ללקוח להזמין משחק באחד מהחדרים המעולים שלנו – בעזרת תקשורת מדויקת, מכוונת מטרה ועם תחושת ביטחון שהוא בידיים טובות.
-תענה לפי המידע המצורף בגוגל שייטס בגליונות 
-    {sheet_data}
-    """
-
-def load_faq_data():
-    global faq_data
-    if not faq_data:
-        faq_data = faq_worksheet.get_all_records()
-
-def match_faq(user_question: str, threshold: float = FAQ_MATCH_THRESHOLD):
-    load_faq_data()
-    questions = [row["שאלה"] for row in faq_data]
-    matches = get_close_matches(user_question, questions, n=1, cutoff=threshold)
-    if matches:
-        match = matches[0]
-        for row in faq_data:
-            if row["שאלה"] == match:
-                return row["תשובה"], match
-    return None
+כאשר לקוח מבקש המלצה, שאל תמיד תחילה: כמה שחקנים תהיו, מה הגילאים, האם יש לכם ניסיון קודם ומה הסגנון המועדף עליכם.
+ענה אך ורק לפי המידע המצורף בגוגל שייטס בגליונות:
+{sheet_data}
+"""
 
 def get_sheet_data(sheet_name: str) -> str:
     if sheet_name in sheet_cache:
@@ -172,7 +142,7 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str, sheet_names: list
         total_tokens = prompt_tokens + completion_tokens
 
     if total_tokens > MAX_TOKENS_GPT4:
-        return "⚠️ השאלה וההקשר ארוכים מדי ל-GPT-4-Turbo. נסה לקצר."
+        return "⚠️ השאלה וההקשר ארוכים מדי GPT-4-Turbo. נסה לקצר."
 
     try:
         response = openai_client.chat.completions.create(
@@ -182,9 +152,9 @@ def ask_gpt(user_id: str, user_question: str, sheet_data: str, sheet_names: list
             max_tokens=completion_tokens
         )
     except Exception as e:
-        return f"⚠️ שגיאה מהשרת של OpenAI: {str(e)}"
+        return f"⚠️ שגיאה מהשרת OpenAI: {str(e)}"
 
-    answer = response.choices[0].message.content.strip().replace('"', '').replace('\n', ' ').replace('\r', ' ').strip()
+    answer = response.choices[0].message.content.strip()
     history.append({"role": "assistant", "content": answer})
     save_chat_history(user_id, history)
 
@@ -222,12 +192,6 @@ def webhook():
             except Exception as e:
                 total, ils = 0, 0
             return jsonify({"reply": f"🔢 סך הטוקנים: {total}\n💰 עלות משוערת: ₪{ils}"})
-
-        match = match_faq(user_question)
-        if match:
-            answer, matched_question = match
-            log_to_sheet(user_id, "FAQ", user_question, answer, 0, 0, DEFAULT_SHEET, source="FAQ", match=matched_question)
-            return jsonify({"reply": answer})
 
         sheets, full_context = try_load_valid_sheets(user_id, user_question)
         if not full_context:
